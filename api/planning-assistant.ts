@@ -1,12 +1,58 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { validateGeminiPlan } from '../src/simulation/geminiValidator';
+
+// City network taxonomy constants
+const CITY_NODE_IDS = [
+  'hospital_junction',
+  'college_road',
+  'market_square',
+  'residential_district',
+  'expressway_north',
+  'tech_park',
+];
+
+const ROAD_SEGMENT_IDS = [
+  'seg_res_college',
+  'seg_college_hospital',
+  'seg_hospital_market',
+  'seg_res_market',
+  'seg_expressway_hospital',
+  'seg_res_expressway',
+  'seg_hospital_tech',
+  'seg_market_tech',
+];
+
+const TRANSIT_CORRIDOR_SEGMENTS = [
+  'seg_res_college',
+  'seg_college_hospital',
+  'seg_hospital_market',
+  'seg_res_market',
+  'seg_expressway_hospital',
+  'seg_hospital_tech',
+  'seg_market_tech',
+];
+
+const ACTIVE_MOBILITY_SEGMENTS = [
+  'seg_res_college',
+  'seg_college_hospital',
+  'seg_res_market',
+  'seg_hospital_tech',
+];
+
+const VALID_OBJECTIVES = [
+  'congestion',
+  'emissions',
+  'emergency_access',
+  'transit',
+  'active_mobility',
+  'budget_efficiency',
+];
 
 // Lazy-initialized Gemini client
 let genAIClient: GoogleGenAI | null = null;
 function getGenAIClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured in the server environment.');
+    throw new Error('GEMINI_API_KEY is not configured in the Vercel environment variables.');
   }
   if (!genAIClient) {
     genAIClient = new GoogleGenAI({
@@ -59,7 +105,7 @@ const PLANNING_RESPONSE_SCHEMA = {
             type: Type.ARRAY,
             items: { type: Type.STRING },
             description:
-              "Node IDs for adaptiveSignals (e.g. hospital_junction, college_road); Road segment IDs for busPriority or greenWalkways (e.g. seg_college_hospital).",
+              "Node IDs for adaptiveSignals; Road segment IDs for busPriority or greenWalkways.",
           },
           parameters: {
             type: Type.OBJECT,
@@ -131,61 +177,233 @@ Your role is to translate a user's natural language planning brief into structur
 
 CITY NETWORK TAXONOMY:
 1. Hub Nodes:
-   - "hospital_junction": City General Trauma Center, Medical University & Emergency Ambulance Arterial (acute peak delays, critical emergency access).
-   - "college_road": Civic Polytechnic, High Schools & Student Transit Terminal (high transit demand).
-   - "market_square": Central Commercial Bazaar & Wholesale District (freight, emissions, high pedestrian density).
-   - "residential_district": Southwest High-Density Residential Apartments (primary morning commute origin).
+   - "hospital_junction": City General Trauma Center, Medical University & Emergency Ambulance Arterial.
+   - "college_road": Civic Polytechnic, High Schools & Student Transit Terminal.
+   - "market_square": Central Commercial Bazaar & Wholesale District.
+   - "residential_district": Southwest High-Density Residential Apartments.
    - "expressway_north": Regional 4-lane perimeter highway bypass.
-   - "tech_park": IT Campuses & Research Labs (major white-collar employment destination).
+   - "tech_park": IT Campuses & Research Labs.
 
 2. Road Segments (Links):
-   - "seg_res_college": Residential to College Road (3.2 km, 2 lanes, potential for transit and active mobility).
-   - "seg_college_hospital": College Road to Hospital Junction (1.8 km, 2 lanes, ACUTE BOTTLENECK, critical for hospital emergency access).
-   - "seg_hospital_market": Hospital to Market Central Link (2.5 km, 3 lanes, potential for bus corridor).
-   - "seg_res_market": Residential to Market Southern Ave (3.6 km, 2 lanes, potential for transit and green walkway).
-   - "seg_expressway_hospital": Expressway to Hospital Feeder (2.4 km, 3 lanes, transit potential).
-   - "seg_res_expressway": Residential to Expressway Link (4.1 km, 4 lanes).
-   - "seg_hospital_tech": Hospital to Tech Park Diagonal (2.9 km, 2 lanes, transit and active mobility potential).
-   - "seg_market_tech": Market to Tech Park Eastern Ave (3.4 km, 2 lanes, transit potential).
+   - "seg_res_college": Residential to College Road (3.2 km, transit/active mobility).
+   - "seg_college_hospital": College Road to Hospital Junction (1.8 km, critical emergency access).
+   - "seg_hospital_market": Hospital to Market Central Link (2.5 km, bus corridor).
+   - "seg_res_market": Residential to Market Southern Ave (3.6 km, transit/green walkway).
+   - "seg_expressway_hospital": Expressway to Hospital Feeder (2.4 km).
+   - "seg_res_expressway": Residential to Expressway Link (4.1 km).
+   - "seg_hospital_tech": Hospital to Tech Park Diagonal (2.9 km).
+   - "seg_market_tech": Market to Tech Park Eastern Ave (3.4 km).
 
 POLICY INTERVENTIONS & UNIT COSTS (in Indian Rupee Lakhs - ₹ Lakh):
-1. "adaptiveSignals":
-   - Cost: ₹1.5 Lakh per targeted node.
-   - Target locations: Node IDs only (e.g. ["hospital_junction", "college_road"]).
-   - Parameters: optimizationLevel (1 to 5).
-2. "busPriority":
-   - Cost: ₹2.2 Lakh/km (+ ₹0.6 Lakh/km if dedicatedLane is true).
-   - Target locations: Segment IDs with transit potential (e.g. ["seg_college_hospital", "seg_hospital_market"]).
-   - Parameters: dedicatedLane (boolean), frequencyMin (3 to 15 mins), electricFleetShare (0 to 100%).
-3. "greenWalkways":
-   - Cost: ₹1.1 Lakh/km (+ ₹1.5 Lakh if pedestrianizeMarketSquare is true).
-   - Target locations: Segment IDs with active mobility potential (e.g. ["seg_college_hospital", "seg_res_college", "seg_res_market"]).
-   - Parameters: pedestrianizeMarketSquare (boolean), canopyCoverageDensity (1 to 5).
-
-BUDGETING RULES:
-- If user specifies a budget like "₹10 lakh", set budgetCapLakhs: 10.0. Carefully configure interventions so the estimated total cost fits within this ceiling!
-- If user does not specify a budget, set budgetCapLakhs to null.
+1. "adaptiveSignals": ₹1.5 Lakh per targeted node.
+2. "busPriority": ₹2.2 Lakh/km (+ ₹0.6 Lakh/km if dedicatedLane).
+3. "greenWalkways": ₹1.1 Lakh/km (+ ₹1.5 Lakh if pedestrianizeMarketSquare).
 
 CRITICAL CONSTRAINTS:
-- Do NOT invent or predict final numerical travel times (e.g. "will reduce travel time by 4.2 minutes"), exact emission tons, or cost savings in your text. CityTwin's deterministic simulation engine computes all numbers.
-- If the user references locations NOT in the city network (e.g. "Airport", "Seaport", "Downtown South"), or asks for unsupported interventions (e.g. "monorail", "hyperloop", "tolls"), set clarificationNeeded: true and provide a clarificationQuestion explaining what is supported.
+- Do NOT invent or predict final numerical travel times or cost savings in your text. CityTwin's deterministic engine computes all numbers.
+- If the user references locations NOT in the network, set clarificationNeeded: true.
 - Return ONLY valid JSON conforming to the schema.`;
 
+function validatePlan(raw: any) {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  if (!raw || typeof raw !== 'object') {
+    return {
+      rawResponse: {
+        goalSummary: 'Malformed plan',
+        targetLocations: [],
+        budgetCapLakhs: 15.0,
+        objectives: ['congestion'],
+        interventions: [],
+        assumptions: ['Payload was not an object'],
+        clarificationNeeded: true,
+        clarificationQuestion: 'Could you rephrase your planning goal? The previous model response was malformed.',
+        explanation: 'The request could not be processed due to a structural error.',
+      },
+      scenarioInterventions: {
+        adaptiveSignals: { enabled: false, targetNodeIds: [], optimizationLevel: 3, costPerNodeLakhs: 1.5 },
+        busPriority: { enabled: false, targetSegmentIds: [], dedicatedLane: false, frequencyMin: 6, electricFleetShare: 30, costPerKmLakhs: 2.2 },
+        greenWalkways: { enabled: false, targetSegmentIds: [], pedestrianizeMarketSquare: false, canopyCoverageDensity: 3, costPerKmLakhs: 1.1 },
+        budgetCapLakhs: 15.0,
+      },
+      validationErrors: ['Received non-object or null response from AI model.'],
+      warnings: [],
+      isValid: false,
+      clarificationNeeded: true,
+      clarificationQuestion: 'Could you rephrase your planning goal? The previous model response was malformed.',
+    };
+  }
+
+  const goalSummary = typeof raw.goalSummary === 'string' && raw.goalSummary.trim()
+    ? raw.goalSummary.trim()
+    : 'Urban Planning Intervention';
+  const explanation = typeof raw.explanation === 'string' && raw.explanation.trim()
+    ? raw.explanation.trim()
+    : 'Synthesized policy package for the specified civic corridor.';
+
+  const rawLocations = Array.isArray(raw.targetLocations) ? raw.targetLocations : [];
+  const targetLocations: string[] = [];
+  const unsupportedLocations: string[] = [];
+
+  rawLocations.forEach((loc: any) => {
+    if (typeof loc === 'string') {
+      const cleanLoc = loc.trim().toLowerCase();
+      const matchedNode = CITY_NODE_IDS.find((id) => id === cleanLoc || cleanLoc.includes(id));
+      const matchedSeg = ROAD_SEGMENT_IDS.find((id) => id === cleanLoc || cleanLoc.includes(id));
+      if (matchedNode) {
+        if (!targetLocations.includes(matchedNode)) targetLocations.push(matchedNode);
+      } else if (matchedSeg) {
+        if (!targetLocations.includes(matchedSeg)) targetLocations.push(matchedSeg);
+      } else {
+        unsupportedLocations.push(loc);
+      }
+    }
+  });
+
+  if (unsupportedLocations.length > 0) {
+    errors.push(`Unsupported or unknown locations: ${unsupportedLocations.join(', ')}.`);
+  }
+
+  let budgetCapLakhs = 15.0;
+  if (raw.budgetCapLakhs !== null && raw.budgetCapLakhs !== undefined) {
+    const parsedBudget = Number(raw.budgetCapLakhs);
+    if (!isNaN(parsedBudget) && parsedBudget > 0) {
+      budgetCapLakhs = Math.min(50.0, Number(parsedBudget.toFixed(2)));
+    }
+  }
+
+  const rawObjectives = Array.isArray(raw.objectives) ? raw.objectives : [];
+  const objectives = rawObjectives
+    .filter((o: any) => typeof o === 'string' && VALID_OBJECTIVES.includes(o.toLowerCase().trim()))
+    .map((o: string) => o.toLowerCase().trim());
+  if (objectives.length === 0) objectives.push('congestion');
+
+  const scenarioInterventions = {
+    adaptiveSignals: { enabled: false, targetNodeIds: [] as string[], optimizationLevel: 3, costPerNodeLakhs: 1.5 },
+    busPriority: { enabled: false, targetSegmentIds: [] as string[], dedicatedLane: false, frequencyMin: 6, electricFleetShare: 30, costPerKmLakhs: 2.2 },
+    greenWalkways: { enabled: false, targetSegmentIds: [] as string[], pedestrianizeMarketSquare: false, canopyCoverageDensity: 3, costPerKmLakhs: 1.1 },
+    budgetCapLakhs,
+  };
+
+  const rawInterventions = Array.isArray(raw.interventions) ? raw.interventions : [];
+  rawInterventions.forEach((item: any) => {
+    if (!item || typeof item !== 'object') return;
+    const type = String(item.type || '').trim().toLowerCase();
+
+    if (type.includes('signal') || type.includes('adaptive')) {
+      const targetNodeIds = (Array.isArray(item.targetLocations) ? item.targetLocations : [])
+        .filter((loc: string) => CITY_NODE_IDS.includes(loc));
+      scenarioInterventions.adaptiveSignals = {
+        enabled: Boolean(item.enabled),
+        targetNodeIds,
+        optimizationLevel: Math.max(1, Math.min(5, Math.round(Number(item.parameters?.optimizationLevel) || 3))),
+        costPerNodeLakhs: 1.5,
+      };
+    } else if (type.includes('bus') || type.includes('transit')) {
+      const targetSegmentIds = (Array.isArray(item.targetLocations) ? item.targetLocations : [])
+        .filter((loc: string) => TRANSIT_CORRIDOR_SEGMENTS.includes(loc));
+      scenarioInterventions.busPriority = {
+        enabled: Boolean(item.enabled),
+        targetSegmentIds,
+        dedicatedLane: Boolean(item.parameters?.dedicatedLane),
+        frequencyMin: Math.max(3, Math.min(15, Math.round(Number(item.parameters?.frequencyMin) || 6))),
+        electricFleetShare: Math.max(0, Math.min(100, Math.round(Number(item.parameters?.electricFleetShare) || 30))),
+        costPerKmLakhs: 2.2,
+      };
+    } else if (type.includes('green') || type.includes('walk') || type.includes('pedestrian')) {
+      const targetSegmentIds = (Array.isArray(item.targetLocations) ? item.targetLocations : [])
+        .filter((loc: string) => ACTIVE_MOBILITY_SEGMENTS.includes(loc));
+      scenarioInterventions.greenWalkways = {
+        enabled: Boolean(item.enabled),
+        targetSegmentIds,
+        pedestrianizeMarketSquare: Boolean(item.parameters?.pedestrianizeMarketSquare),
+        canopyCoverageDensity: Math.max(1, Math.min(5, Math.round(Number(item.parameters?.canopyCoverageDensity) || 3))),
+        costPerKmLakhs: 1.1,
+      };
+    }
+  });
+
+  const needsClarification = Boolean(raw.clarificationNeeded) || errors.length > 0;
+  const computedClarificationQuestion =
+    raw.clarificationQuestion ||
+    (errors.length > 0
+      ? `We detected unsupported elements: ${errors.join(' ')} Which supported corridors or policy controls would you like to target?`
+      : null);
+
+  return {
+    rawResponse: {
+      goalSummary,
+      targetLocations,
+      budgetCapLakhs,
+      objectives,
+      interventions: rawInterventions,
+      assumptions: Array.isArray(raw.assumptions) ? raw.assumptions : [],
+      clarificationNeeded: needsClarification,
+      clarificationQuestion: computedClarificationQuestion,
+      explanation,
+    },
+    scenarioInterventions,
+    validationErrors: errors,
+    warnings,
+    isValid: errors.length === 0 && !needsClarification,
+    clarificationNeeded: needsClarification,
+    clarificationQuestion: computedClarificationQuestion,
+  };
+}
+
+// Helper to parse JSON body from Vercel Serverless Function request
+async function parseBody(req: any): Promise<any> {
+  if (req.body) {
+    if (typeof req.body === 'string') {
+      try {
+        return JSON.parse(req.body);
+      } catch {
+        return {};
+      }
+    }
+    return req.body;
+  }
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (chunk: any) => {
+      data += chunk;
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        resolve({});
+      }
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
 export default async function handler(req: any, res: any) {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      status: 'healthy',
+      endpoint: '/api/planning-assistant',
+      service: 'CityTwin AI Planning Assistant Serverless Function',
+      geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Method not allowed. Use POST.' });
   }
 
-  // Support both parsed bodies and JSON string bodies
-  let body = req.body;
-  if (typeof body === 'string') {
-    try {
-      body = JSON.parse(body);
-    } catch {
-      return res.status(400).json({ success: false, error: 'Invalid JSON request body.' });
-    }
-  }
-
+  const body = await parseBody(req);
   const prompt = body?.prompt;
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
@@ -195,9 +413,15 @@ export default async function handler(req: any, res: any) {
     });
   }
 
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({
+      success: false,
+      error: 'GEMINI_API_KEY is not configured in Vercel environment variables. Please add GEMINI_API_KEY to your Vercel project settings.',
+    });
+  }
+
   try {
     const ai = getGenAIClient();
-
     const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
     let lastError: any = null;
     let responseText: string | undefined;
@@ -236,18 +460,17 @@ export default async function handler(req: any, res: any) {
       throw new Error(`Failed to parse structured JSON from model: ${parseErr.message}`);
     }
 
-    const validatedPlan = validateGeminiPlan(parsedJson);
+    const validatedResult = validatePlan(parsedJson);
 
     return res.status(200).json({
       success: true,
-      plan: validatedPlan,
+      plan: validatedResult,
     });
   } catch (err: any) {
     console.error('Error in /api/planning-assistant:', err);
-    const errorMessage = err?.message || 'Internal server error while processing planning goal.';
     return res.status(500).json({
       success: false,
-      error: errorMessage,
+      error: err?.message || 'Internal server error while processing planning goal.',
     });
   }
 }
