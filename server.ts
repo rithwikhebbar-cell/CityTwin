@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 import { validateGeminiPlan } from './src/simulation/geminiValidator';
+import osmNetworkHandler from './api/osm-network';
 
 dotenv.config();
 
@@ -321,6 +322,9 @@ app.post('/api/planning-assistant', async (req, res) => {
     });
   }
 });
+
+// OpenStreetMap Network Fetch & Normalization endpoint
+app.all('/api/osm-network', (req, res) => osmNetworkHandler(req, res));
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

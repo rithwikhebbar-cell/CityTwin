@@ -131,61 +131,179 @@ export function projectGeoToCanvas(
 }
 
 /**
- * Public Overpass API endpoints (with fallback redundancy)
+ * Parses raw OpenStreetMap 0.6 XML (from api.openstreetmap.org) into standard OSM elements format.
  */
-const OVERPASS_ENDPOINTS = [
+export function parseOsmXmlToElements(xml: string): any[] {
+  const elements: any[] = [];
+  const nodeRegex = /<node id="(\d+)"[^>]*lat="([^"]+)"[^>]*lon="([^"]+)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = nodeRegex.exec(xml)) !== null) {
+    elements.push({
+      type: 'node',
+      id: match[1],
+      lat: parseFloat(match[2]),
+      lon: parseFloat(match[3]),
+    });
+  }
+
+  const wayRegex = /<way id="(\d+)"[^>]*>([\s\S]*?)<\/way>/g;
+  while ((match = wayRegex.exec(xml)) !== null) {
+    const wayId = match[1];
+    const wayBody = match[2];
+
+    const highwayMatch = /<tag k="highway" v="([^"]+)"/.exec(wayBody);
+    if (!highwayMatch) continue;
+    const highway = highwayMatch[1];
+    if (
+      !['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'residential', 'unclassified'].includes(highway)
+    ) {
+      continue;
+    }
+
+    const nameMatch = /<tag k="name" v="([^"]+)"/.exec(wayBody);
+    const lanesMatch = /<tag k="lanes" v="([^"]+)"/.exec(wayBody);
+    const maxspeedMatch = /<tag k="maxspeed" v="([^"]+)"/.exec(wayBody);
+
+    const ndRegex = /<nd ref="(\d+)"/g;
+    const nodes: string[] = [];
+    let ndMatch: RegExpExecArray | null;
+    while ((ndMatch = ndRegex.exec(wayBody)) !== null) {
+      nodes.push(ndMatch[1]);
+    }
+
+    if (nodes.length >= 2) {
+      elements.push({
+        type: 'way',
+        id: wayId,
+        nodes,
+        tags: {
+          highway,
+          name: nameMatch ? nameMatch[1] : undefined,
+          lanes: lanesMatch ? lanesMatch[1] : undefined,
+          maxspeed: maxspeedMatch ? maxspeedMatch[1] : undefined,
+        },
+      });
+    }
+  }
+
+  return elements;
+}
+
+/**
+ * Diagnostic logger for import pipeline stages.
+ */
+export function logOsmDiagnostic(stage: string, details: Record<string, any>) {
+  console.log(`%c[CityTwin OSM] [${stage}]`, 'color: #14b8a6; font-weight: bold;', details);
+}
+
+/**
+ * Public Overpass API endpoints (with geographically diverse fallback redundancy)
+ */
+export const OVERPASS_ENDPOINTS = [
+  'https://z.overpass-api.de/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://lz4.overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
 ];
 
 /**
  * Fetches real road network from OpenStreetMap Overpass API for given bounding box.
+ * Uses optimized query hierarchy (arterial corridors first) and explicit error reasons.
  */
 export async function fetchOsmRoadNetwork(
   bbox: BoundingBox,
-  timeoutSeconds: number = 20
+  timeoutSeconds: number = 30,
+  includeResidential: boolean = false
 ): Promise<any> {
+  const highwayFilter = includeResidential
+    ? '^(motorway|trunk|primary|secondary|tertiary|residential)$'
+    : '^(motorway|trunk|primary|secondary|tertiary)$';
+
   const query = `[out:json][timeout:${timeoutSeconds}];
 (
-  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential)$"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
+  way["highway"~"${highwayFilter}"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
 );
 (._;>;);
 out body;`;
 
   let lastError: Error | null = null;
+  const attemptedErrors: Array<{ endpoint: string; error: string; timeMs: number }> = [];
 
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    const t0 = Date.now();
+    let controller: AbortController | null = null;
+    let timer: any = null;
+
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), (timeoutSeconds + 5) * 1000);
+      controller = new AbortController();
+      timer = setTimeout(() => {
+        controller?.abort(
+          new Error(`Overpass request to ${endpoint} timed out after ${timeoutSeconds}s.`)
+        );
+      }, (timeoutSeconds + 5) * 1000);
+
+      logOsmDiagnostic('Request Started', {
+        endpoint,
+        timeoutSeconds,
+        includeResidential,
+        bbox,
+      });
 
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          'User-Agent': 'CityTwin-UrbanPlanningSimulator/1.0',
         },
         body: 'data=' + encodeURIComponent(query),
         signal: controller.signal,
       });
 
       clearTimeout(timer);
+      const elapsedMs = Date.now() - t0;
+
+      logOsmDiagnostic('Response Received', {
+        endpoint,
+        status: response.status,
+        statusText: response.statusText,
+        elapsedMs,
+      });
 
       if (!response.ok) {
-        throw new Error(`Overpass returned HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(`Overpass mirror returned HTTP ${response.status}: ${response.statusText}`);
       }
 
       const json = await response.json();
       if (json && Array.isArray(json.elements)) {
+        logOsmDiagnostic('Response Parsed', {
+          endpoint,
+          elementsCount: json.elements.length,
+          elapsedMs,
+        });
         return json;
+      } else {
+        throw new Error('Overpass response did not contain expected elements array.');
       }
     } catch (err: any) {
-      console.warn(`Overpass endpoint failed (${endpoint}):`, err.message || err);
-      lastError = err;
+      if (timer) clearTimeout(timer);
+      const elapsedMs = Date.now() - t0;
+      const isAbort = err.name === 'AbortError' || err.message?.includes('aborted');
+      const errorMsg = isAbort
+        ? `Request timed out after ${timeoutSeconds}s on ${endpoint}`
+        : err.message || String(err);
+
+      console.warn(`[CityTwin OSM] Overpass mirror attempt failed (${endpoint}) after ${elapsedMs}ms:`, errorMsg);
+      attemptedErrors.push({ endpoint, error: errorMsg, timeMs: elapsedMs });
+      lastError = new Error(errorMsg);
     }
   }
 
-  throw lastError || new Error('All Overpass API mirrors were unreachable or timed out.');
+  const failureSummary = attemptedErrors
+    .map((e) => `${e.endpoint.replace('https://', '')}: ${e.error}`)
+    .join(' | ');
+
+  throw lastError || new Error(`All Overpass API mirrors were unreachable: ${failureSummary}`);
 }
 
 /**
@@ -968,11 +1086,12 @@ export async function searchGeographicLocation(query: string): Promise<GeoSearch
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(new Error('Nominatim geocode query timed out after 12s')), 12000);
     const res = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanQuery)}&limit=5`,
       {
         headers: {
+          'User-Agent': 'CityTwin-UrbanPlanningSimulator/1.0 (contact: support@citytwin.dev)',
           Accept: 'application/json',
         },
         signal: controller.signal,
@@ -982,12 +1101,18 @@ export async function searchGeographicLocation(query: string): Promise<GeoSearch
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
-        return data.map((item: any) => ({
+        const results = data.map((item: any) => ({
           name: item.name || item.display_name.split(',')[0],
           lat: parseFloat(item.lat),
           lng: parseFloat(item.lon),
           displayName: item.display_name,
         }));
+        logOsmDiagnostic('Nominatim Geocode Succeeded', {
+          query: cleanQuery,
+          resultsCount: results.length,
+          top: results[0],
+        });
+        return results;
       }
     }
   } catch (err: any) {
@@ -1027,8 +1152,10 @@ export async function searchGeographicLocation(query: string): Promise<GeoSearch
 
 /**
  * High-level function to retrieve an import preview for any selected geographic area.
- * Queries OpenStreetMap Overpass directly based on coordinates and bounding box.
- * NEVER silently substitutes presets when another area was requested.
+ * Dual-engine architecture:
+ * 1. Queries CityTwin's fast /api/osm-network service (accesses official OSM 0.6 API with 0 CORS restrictions in 2-4s)
+ * 2. Falls back to direct browser queries against geographically distributed Overpass mirrors
+ * NEVER silently substitutes presets or synthetic networks when a specific real city is requested.
  */
 export async function getCityNetworkForImport(
   cityName: string,
@@ -1039,25 +1166,119 @@ export async function getCityNetworkForImport(
   // 1. If user explicitly picked an authorized preset via presetKey, return it
   if (presetKey && CURATED_CITY_IMPORT_PRESETS[presetKey]) {
     const p = CURATED_CITY_IMPORT_PRESETS[presetKey];
+    logOsmDiagnostic('Preset Selected', { presetKey, cityName: p.cityName });
     return formatPreviewData(p);
   }
 
-  // 2. Query live from OpenStreetMap Overpass based STRICTLY on geographic bounding box
-  const bbox = calculateBoundingBox(centerCoords.lat, centerCoords.lng, radiusMeters);
+  // Stage 1: Place Geocoding Coordinates Confirmed
+  logOsmDiagnostic('Place Geocoding Confirmed', {
+    cityName,
+    lat: centerCoords.lat,
+    lng: centerCoords.lng,
+    radiusMeters,
+  });
 
+  // Stage 2: Geographic Query Bounding Box Constructed
+  const bbox = calculateBoundingBox(centerCoords.lat, centerCoords.lng, radiusMeters);
+  logOsmDiagnostic('Geographic Query Constructed', {
+    bbox,
+    radiusMeters,
+    approxAreaKm2: Number(((bbox.north - bbox.south) * 111 * (bbox.east - bbox.west) * 111).toFixed(2)),
+  });
+
+  const tStart = Date.now();
+  let proxyError: string | null = null;
+
+  // Stage 3 & 4: Attempt fast backend proxy /api/osm-network
   try {
-    const osmRaw = await fetchOsmRoadNetwork(bbox, 20);
-    const normalized = normalizeOsmDataToCityNetwork(osmRaw, cityName, centerCoords, radiusMeters);
+    const proxyBase =
+      typeof window !== 'undefined' && window.location?.origin
+        ? ''
+        : (typeof process !== 'undefined' && process.env?.PORT ? `http://localhost:${process.env.PORT}` : 'http://localhost:3000');
+    const proxyUrl = `${proxyBase}/api/osm-network?lat=${centerCoords.lat}&lng=${centerCoords.lng}&radiusMeters=${radiusMeters}&cityName=${encodeURIComponent(cityName)}`;
+    logOsmDiagnostic('Request Started: Application API Proxy', { url: proxyUrl });
+
+    const proxyController = new AbortController();
+    const proxyTimer = setTimeout(() => {
+      proxyController.abort(new Error('Proxy request timed out after 12s.'));
+    }, 12000);
+
+    const proxyRes = await fetch(proxyUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: proxyController.signal,
+    });
+    clearTimeout(proxyTimer);
+
+    if (proxyRes.ok) {
+      const data = await proxyRes.json();
+      if (data && data.success && data.preview) {
+        logOsmDiagnostic('Response Received: Proxy Success', {
+          elapsedMs: Date.now() - tStart,
+          nodeCount: data.preview.nodeCount,
+          segmentCount: data.preview.segmentCount,
+          source: data.preview.source,
+        });
+        return data.preview;
+      }
+    } else if (proxyRes.status !== 404) {
+      const errJson = await proxyRes.json().catch(() => null);
+      proxyError = errJson?.error || `HTTP ${proxyRes.status}: ${proxyRes.statusText}`;
+    }
+  } catch (err: any) {
+    proxyError = err.message || String(err);
+    logOsmDiagnostic('Proxy Attempt Skipped / Inactive', { reason: proxyError });
+  }
+
+  // Fallback Stage: Direct Overpass Queries from Browser
+  try {
+    logOsmDiagnostic('Request Started: Direct Public Overpass API', {
+      bbox,
+      strategy: 'arterial_first',
+    });
+
+    // Attempt arterial hierarchy first (runs in 1-4 seconds)
+    let osmRaw = await fetchOsmRoadNetwork(bbox, 30, false);
+    let normalized = normalizeOsmDataToCityNetwork(osmRaw, cityName, centerCoords, radiusMeters);
+
+    // If arterial query returns fewer than 2 junctions, expand to residential corridors
+    if (normalized.nodes.length < 2 || normalized.roadSegments.length < 1) {
+      logOsmDiagnostic('Arterial Sparse — Expanding to Residential Corridors', {
+        initialJunctions: normalized.nodes.length,
+      });
+      osmRaw = await fetchOsmRoadNetwork(bbox, 35, true);
+      normalized = normalizeOsmDataToCityNetwork(osmRaw, cityName, centerCoords, radiusMeters);
+    }
+
     if (normalized.nodes.length < 2 || normalized.roadSegments.length < 1) {
       throw new Error(
         `OpenStreetMap returned insufficient roadway network data (${normalized.nodes.length} junctions, ${normalized.roadSegments.length} corridors) for this location. Please expand the scoping radius or select an urban area.`
       );
     }
+
+    logOsmDiagnostic('Response Parsed and Normalized', {
+      nodeCount: normalized.nodes.length,
+      segmentCount: normalized.roadSegments.length,
+      elapsedMs: Date.now() - tStart,
+    });
+
     return formatPreviewData(normalized);
   } catch (err: any) {
-    // Explicit error propagation: NEVER silently substitute Bengaluru, Mumbai, London, or any preset!
+    const rawMsg = err.message || '';
+    let userFacingReason = rawMsg;
+
+    if (rawMsg.includes('timed out') || rawMsg.includes('aborted')) {
+      userFacingReason = 'OpenStreetMap Overpass servers timed out under global queue load. Try expanding/reducing the radius or retrying in a few moments.';
+    } else if (rawMsg.includes('HTTP 429') || rawMsg.includes('rate limit')) {
+      userFacingReason = 'OpenStreetMap public API rate limit reached. Please wait 10 seconds before querying again.';
+    } else if (rawMsg.includes('HTTP 502') || rawMsg.includes('HTTP 504') || rawMsg.includes('Bad Gateway')) {
+      userFacingReason = 'OpenStreetMap public mirror temporarily returned Bad Gateway (502). Please retry with another mirror.';
+    }
+
     throw new Error(
-      `OpenStreetMap Overpass import failed for "${cityName}": ${err.message || 'Network timeout or API rate limit'}.`
+      `OpenStreetMap import failed for "${cityName}": ${userFacingReason}`
     );
   }
 }

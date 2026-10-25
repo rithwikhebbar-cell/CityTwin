@@ -7,6 +7,7 @@ import {
   searchGeographicLocation,
   GeoSearchResult,
   CURATED_CITY_IMPORT_PRESETS,
+  logOsmDiagnostic,
 } from '../services/osmImportService';
 import {
   Download,
@@ -78,6 +79,12 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
         setCityName(top.name);
         setPreviewData(null);
         setError(null);
+        logOsmDiagnostic('Place Geocoded in Modal', {
+          query: searchQuery,
+          selectedName: top.name,
+          coords: { lat: top.lat, lng: top.lng },
+          matchingCount: results.length,
+        });
       } else {
         setError(`No geographic locations found for "${searchQuery}". Please try another search term or enter coordinates directly.`);
       }
@@ -95,11 +102,22 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
     setSearchResults([]);
     setPreviewData(null);
     setError(null);
+    logOsmDiagnostic('Place Selected from Suggestions', {
+      name: result.name,
+      coords: { lat: result.lat, lng: result.lng },
+    });
   };
 
   const handleFetchPreview = async (selectedPresetKey?: string) => {
     setIsLoading(true);
     setError(null);
+
+    logOsmDiagnostic('Fetch Road Network Button Clicked', {
+      selectedPresetKey: selectedPresetKey || 'none (live geographic query)',
+      cityName,
+      coords,
+      radiusMeters,
+    });
 
     try {
       let data: ImportPreviewData;
@@ -123,9 +141,20 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
       } else {
         data = await getCityNetworkForImport(cityName, coords, radiusMeters);
       }
+
+      logOsmDiagnostic('Preview Data Loaded Successfully', {
+        cityName: data.cityName,
+        source: data.source,
+        nodeCount: data.nodeCount,
+        segmentCount: data.segmentCount,
+      });
       setPreviewData(data);
     } catch (err: any) {
       console.error('Failed to import road network:', err);
+      logOsmDiagnostic('Import Failed', {
+        cityName,
+        error: err?.message || String(err),
+      });
       setError(err?.message || 'Failed to retrieve road network data for the specified bounding box.');
     } finally {
       setIsLoading(false);
@@ -143,6 +172,11 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
       );
       setPreviewData(data);
       setError(null);
+      logOsmDiagnostic('Synthetic Fallback Generated', {
+        cityName,
+        nodeCount: data.nodeCount,
+        segmentCount: data.segmentCount,
+      });
     } catch (err: any) {
       setError(err.message || 'Failed to generate synthetic grid.');
     } finally {
@@ -152,6 +186,12 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
 
   const handleConfirm = () => {
     if (!previewData) return;
+    logOsmDiagnostic('Import Preview Accepted by User', {
+      cityName: previewData.cityName,
+      source: previewData.source,
+      nodeCount: previewData.nodeCount,
+      segmentCount: previewData.segmentCount,
+    });
     onConfirmImport(previewData);
     onClose();
   };

@@ -26,7 +26,7 @@ import {
   CityNode,
   RoadSegment,
 } from './types/simulation';
-import { ImportedCityNetwork } from './services/osmImportService';
+import { ImportedCityNetwork, logOsmDiagnostic } from './services/osmImportService';
 import { Check, AlertCircle, Globe, Layers, MapPin, Loader2, Building2 } from 'lucide-react';
 import {
   loadAllScenarios,
@@ -318,6 +318,15 @@ function SimulatorApp() {
 
   // Import real city network into Demo City
   const handleImportNetworkToDemoCity = (imported: ImportedCityNetwork) => {
+    logOsmDiagnostic('Active Network Updating in App State', {
+      cityName: imported.cityName,
+      source: imported.source,
+      nodeCount: imported.nodes.length,
+      segmentCount: imported.roadSegments.length,
+      centerCoords: imported.centerCoords,
+      radiusMeters: imported.radiusMeters,
+    });
+
     const newNetwork: CityNetwork = {
       nodes: imported.nodes,
       roadSegments: imported.roadSegments,
@@ -335,6 +344,12 @@ function SimulatorApp() {
     setMapMode('demo');
     setActiveTab('city_map');
     showToast(`Successfully imported ${imported.cityName} (${imported.roadSegments.length} corridors) into Demo City!`);
+
+    logOsmDiagnostic('Active Network Updated Successfully', {
+      cityName: newNetwork.cityName,
+      mapMode: 'demo',
+      activeTab: 'city_map',
+    });
   };
 
   // Save customized scenario (supports updating active scenario or creating new copy)
