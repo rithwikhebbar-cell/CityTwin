@@ -13,7 +13,7 @@ export interface ImportedCityNetwork {
   cityName: string;
   isImported: boolean;
   importedAt: string;
-  source: 'osm_live' | 'osm_preset';
+  source: 'osm_live' | 'osm_preset' | 'synthetic_estimate';
   centerCoords: { lat: number; lng: number };
   radiusMeters: number;
   originalNodesCount: number;
@@ -29,7 +29,7 @@ export interface ImportPreviewData {
   segmentCount: number;
   majorRoads: string[];
   majorJunctions: string[];
-  source: 'osm_live' | 'osm_preset';
+  source: 'osm_live' | 'osm_preset' | 'synthetic_estimate';
   warnings: string[];
   rawNetwork: ImportedCityNetwork;
 }
@@ -952,51 +952,134 @@ export const CURATED_CITY_IMPORT_PRESETS: Record<string, ImportedCityNetwork> = 
   },
 };
 
+export interface GeoSearchResult {
+  name: string;
+  lat: number;
+  lng: number;
+  displayName: string;
+}
+
 /**
- * High-level function to retrieve an import preview for any selected area
- * (calls Overpass API with automatic fallback to high-fidelity preset if query matches or if offline).
+ * Resolves any city, town, neighborhood, or geographic query using OpenStreetMap Nominatim.
+ */
+export async function searchGeographicLocation(query: string): Promise<GeoSearchResult[]> {
+  if (!query || !query.trim()) return [];
+  const cleanQuery = query.trim();
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(cleanQuery)}&limit=5`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timer);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map((item: any) => ({
+          name: item.name || item.display_name.split(',')[0],
+          lat: parseFloat(item.lat),
+          lng: parseFloat(item.lon),
+          displayName: item.display_name,
+        }));
+      }
+    }
+  } catch (err: any) {
+    console.warn('Nominatim geocode query notice:', err?.message || err);
+  }
+
+  // Fallback to sample presets when network is offline
+  const lower = cleanQuery.toLowerCase();
+  const matchedPresets: GeoSearchResult[] = [];
+  if (lower.includes('bengaluru') || lower.includes('bangalore') || lower.includes('silk board')) {
+    matchedPresets.push({
+      name: 'Bengaluru — Silk Board & Koramangala',
+      lat: 12.924,
+      lng: 77.625,
+      displayName: 'Silk Board, Bengaluru, Karnataka, India',
+    });
+  }
+  if (lower.includes('mumbai') || lower.includes('bkc') || lower.includes('bandra')) {
+    matchedPresets.push({
+      name: 'Mumbai — Bandra-Kurla Complex (BKC)',
+      lat: 19.0657,
+      lng: 72.868,
+      displayName: 'Bandra-Kurla Complex, Mumbai, Maharashtra, India',
+    });
+  }
+  if (lower.includes('london') || lower.includes('westminster')) {
+    matchedPresets.push({
+      name: 'London — Westminster & Waterloo Link',
+      lat: 51.501,
+      lng: -0.125,
+      displayName: 'Westminster, London, Greater London, England, United Kingdom',
+    });
+  }
+
+  return matchedPresets;
+}
+
+/**
+ * High-level function to retrieve an import preview for any selected geographic area.
+ * Queries OpenStreetMap Overpass directly based on coordinates and bounding box.
+ * NEVER silently substitutes presets when another area was requested.
  */
 export async function getCityNetworkForImport(
   cityName: string,
   centerCoords: { lat: number; lng: number },
-  radiusMeters: number = 1000
+  radiusMeters: number = 1000,
+  presetKey?: string
 ): Promise<ImportPreviewData> {
-  const normName = cityName.toLowerCase();
-
-  // 1. Check if the user selected one of our featured presets directly
-  if (normName.includes('bengaluru') || normName.includes('silk board')) {
-    const p = CURATED_CITY_IMPORT_PRESETS.bengaluru;
-    return formatPreviewData(p);
-  }
-  if (normName.includes('mumbai') || normName.includes('bkc')) {
-    const p = CURATED_CITY_IMPORT_PRESETS.mumbai;
-    return formatPreviewData(p);
-  }
-  if (normName.includes('london') || normName.includes('westminster')) {
-    const p = CURATED_CITY_IMPORT_PRESETS.london;
+  // 1. If user explicitly picked an authorized preset via presetKey, return it
+  if (presetKey && CURATED_CITY_IMPORT_PRESETS[presetKey]) {
+    const p = CURATED_CITY_IMPORT_PRESETS[presetKey];
     return formatPreviewData(p);
   }
 
-  // 2. Fetch live from OpenStreetMap Overpass
+  // 2. Query live from OpenStreetMap Overpass based STRICTLY on geographic bounding box
   const bbox = calculateBoundingBox(centerCoords.lat, centerCoords.lng, radiusMeters);
 
   try {
-    const osmRaw = await fetchOsmRoadNetwork(bbox, 18);
+    const osmRaw = await fetchOsmRoadNetwork(bbox, 20);
     const normalized = normalizeOsmDataToCityNetwork(osmRaw, cityName, centerCoords, radiusMeters);
+    if (normalized.nodes.length < 2 || normalized.roadSegments.length < 1) {
+      throw new Error(
+        `OpenStreetMap returned insufficient roadway network data (${normalized.nodes.length} junctions, ${normalized.roadSegments.length} corridors) for this location. Please expand the scoping radius or select an urban area.`
+      );
+    }
     return formatPreviewData(normalized);
   } catch (err: any) {
-    console.warn('Live Overpass fetch failed, generating realistic localized GIS network for coordinates:', err.message || err);
-
-    // Fallback: Generate real-world projection based on the exact coordinates and city name
-    const fallbackNetwork = generateFallbackNetwork(cityName, centerCoords, radiusMeters, [
-      `Notice: OSM Overpass API public mirror timed out or was rate-limited (${err.message || 'Network Timeout'}).`,
-      'Generated high-accuracy localized road network matching the selected geographic bounding box and coordinates.',
-    ]);
-    return formatPreviewData(fallbackNetwork);
+    // Explicit error propagation: NEVER silently substitute Bengaluru, Mumbai, London, or any preset!
+    throw new Error(
+      `OpenStreetMap Overpass import failed for "${cityName}": ${err.message || 'Network timeout or API rate limit'}.`
+    );
   }
 }
 
-function formatPreviewData(network: ImportedCityNetwork): ImportPreviewData {
+/**
+ * Generates an explicitly-tagged synthetic geometric approximation for coordinates
+ * only when requested by user after live API is unavailable.
+ */
+export function getSyntheticFallbackForArea(
+  cityName: string,
+  centerCoords: { lat: number; lng: number },
+  radiusMeters: number = 1000,
+  warningReason?: string
+): ImportPreviewData {
+  const fallback = generateFallbackNetwork(cityName, centerCoords, radiusMeters, [
+    warningReason || 'Generated synthetic geometric grid calibrated for coordinates. Live OSM query was unreachable.',
+    'Notice: Topology represents synthetic benchmark geometry, not real surveyed OSM observations.',
+  ]);
+  return formatPreviewData(fallback);
+}
+
+export function formatPreviewData(network: ImportedCityNetwork): ImportPreviewData {
   const majorRoads = network.roadSegments.slice(0, 5).map((s) => `${s.name} (${s.lanes} lanes, ${s.lengthKm} km)`);
   const majorJunctions = network.nodes.slice(0, 5).map((n) => n.name);
 
@@ -1154,7 +1237,7 @@ function generateFallbackNetwork(
     cityName,
     isImported: true,
     importedAt: new Date().toISOString(),
-    source: 'osm_preset',
+    source: 'synthetic_estimate',
     centerCoords,
     radiusMeters,
     originalNodesCount: nodes.length,

@@ -36,6 +36,7 @@ interface ScenarioLabProps {
   activeScenario?: Scenario;
   nodes?: CityNode[];
   roadSegments?: RoadSegment[];
+  cityName?: string;
   onLoadPreset: (scenarioId: string) => void;
   onSaveScenario: (name: string, description: string, overwriteExistingId?: string) => void;
   onGoToCompare: () => void;
@@ -54,6 +55,7 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
   activeScenario,
   nodes = CITY_NODES,
   roadSegments = ROAD_SEGMENTS,
+  cityName = 'CityTwin Benchmark Demo City',
   onLoadPreset,
   onSaveScenario,
   onGoToCompare,
@@ -73,6 +75,40 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
 
   const { adaptiveSignals, busPriority, greenWalkways, budgetCapLakhs } = interventions;
   const { metrics } = simulationResult;
+
+  // Deduplicate scenarios at data-source level while preserving genuinely distinct presets
+  const deduplicatedScenarios = React.useMemo(() => {
+    const list: Scenario[] = [];
+    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
+
+    for (const sc of scenarios) {
+      if (!sc || !sc.id) continue;
+      if (seenIds.has(sc.id)) continue;
+
+      const normName = (sc.shortName || sc.name || '').trim().toLowerCase();
+      const cityKey = (sc.network?.cityName || '').trim().toLowerCase();
+      const dedupeKey = `${normName}__${cityKey}`;
+
+      if (seenKeys.has(dedupeKey)) continue;
+
+      seenIds.add(sc.id);
+      seenKeys.add(dedupeKey);
+      list.push(sc);
+    }
+    return list;
+  }, [scenarios]);
+
+  // Check for unavailable network elements in active configuration vs current active network
+  const activeTargetNodeIds = adaptiveSignals.enabled ? adaptiveSignals.targetNodeIds : [];
+  const activeTargetSegmentIds = [
+    ...(busPriority.enabled ? busPriority.targetSegmentIds : []),
+    ...(greenWalkways.enabled ? greenWalkways.targetSegmentIds : []),
+  ];
+
+  const unavailableNodeIds = activeTargetNodeIds.filter((id) => !nodes.some((n) => n.id === id));
+  const unavailableSegmentIds = activeTargetSegmentIds.filter((id) => !roadSegments.some((s) => s.id === id));
+  const hasTopologyMismatch = unavailableNodeIds.length > 0 || unavailableSegmentIds.length > 0;
 
   // Toggle helpers
   const handleToggleSignals = () => {
@@ -169,35 +205,197 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Top Banner: Quick Presets Bar */}
-      <div className="bg-[#101b3b] border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-teal-400" />
-            <h2 className="text-sm font-bold text-white tracking-tight">
-              Preconfigured Hackathon Presets
-            </h2>
+      {/* Top Section: Preconfigured Hackathon Presets & Scenario Selector */}
+      <div className="bg-[#101b3b] border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4">
+        {/* Section Header */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-teal-500/15 border border-teal-500/30 flex items-center justify-center text-teal-400">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <h2 className="text-sm font-bold text-white tracking-tight">
+                Preconfigured Hackathon Presets
+              </h2>
+              <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-teal-500/15 text-teal-300 border border-teal-500/30">
+                City: {cityName}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Select calibrated baseline policy models. Selecting any preset atomically updates network topology, target junctions, corridors, and budget allocation.
+            </p>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Load targeted baseline configurations or design custom policy interventions.
-          </p>
+
+          {activeScenario && (
+            <div className="flex items-center gap-2 self-start md:self-auto bg-slate-900/80 px-3 py-1.5 rounded-xl border border-slate-700/80">
+              <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse" />
+              <span className="text-xs text-slate-300 font-medium">
+                Active Plan: <strong className="text-teal-300">{activeScenario.shortName || activeScenario.name}</strong>
+              </span>
+            </div>
+          )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {scenarios.map((sc) => (
-            <button
-              key={sc.id}
-              onClick={() => onLoadPreset(sc.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
-                sc.id === 'scenario_hospital_relief'
-                  ? 'bg-teal-500/15 text-teal-300 border-teal-500/40 hover:bg-teal-500/25'
-                  : 'bg-slate-900/60 text-slate-300 border-slate-800 hover:text-white hover:bg-slate-800/80'
-              }`}
-            >
-              {sc.name}
-            </button>
-          ))}
+        {/* Responsive Grid of Compact Preset Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+          {deduplicatedScenarios.map((sc) => {
+            const isSelected = activeScenario?.id === sc.id;
+            const displayName =
+              sc.shortName ||
+              (sc.name.length > 22 ? `${sc.name.slice(0, 20)}…` : sc.name);
+            const budget = sc.interventions?.budgetCapLakhs ?? 15;
+            const isRegionalModel = Boolean(sc.network && sc.network.isImported);
+
+            // Contextual category badge
+            let categoryLabel = 'Benchmark';
+            let categoryColor = 'bg-slate-800 text-slate-300 border-slate-700';
+            if (sc.id === 'scenario_baseline') {
+              categoryLabel = 'Reference';
+              categoryColor = 'bg-slate-800/80 text-slate-400 border-slate-700';
+            } else if (sc.id === 'scenario_hospital_relief') {
+              categoryLabel = 'Healthcare';
+              categoryColor = 'bg-rose-500/15 text-rose-300 border-rose-500/30';
+            } else if (sc.id === 'scenario_transit_priority') {
+              categoryLabel = 'Rapid BRT';
+              categoryColor = 'bg-blue-500/15 text-blue-300 border-blue-500/30';
+            } else if (sc.id === 'scenario_green_active') {
+              categoryLabel = 'Active Travel';
+              categoryColor = 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+            } else if (sc.id === 'scenario_transit_modeshare') {
+              categoryLabel = 'Mode-Share';
+              categoryColor = 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30';
+            } else if (sc.id === 'scenario_dharmasthala_model' || isRegionalModel) {
+              categoryLabel = 'Pilgrim Hub';
+              categoryColor = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
+            }
+
+            return (
+              <button
+                key={sc.id}
+                type="button"
+                onClick={() => onLoadPreset(sc.id)}
+                title={`${sc.name} — ${sc.description || sc.tagline}`}
+                aria-label={`Load preset ${sc.name}`}
+                className={`relative flex flex-col justify-between text-left p-3.5 rounded-xl border transition-all duration-200 group cursor-pointer ${
+                  isSelected
+                    ? 'bg-gradient-to-b from-teal-950/70 to-slate-900 border-teal-400 text-white shadow-xl shadow-teal-500/10 ring-1 ring-teal-400/50 scale-[1.01]'
+                    : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-800/80 hover:text-white'
+                }`}
+              >
+                {/* Header row inside card */}
+                <div className="flex items-center justify-between w-full mb-2 gap-1.5">
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider border ${categoryColor}`}>
+                    {categoryLabel}
+                  </span>
+                  <span className="text-[11px] font-mono font-bold text-amber-300/90">
+                    ₹{budget}L
+                  </span>
+                </div>
+
+                {/* Preset Display Name & Short Description */}
+                <div className="space-y-1 mb-3">
+                  <div className="flex items-center gap-1.5">
+                    {isSelected && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-400 shrink-0" />
+                    )}
+                    <h3 className={`text-xs font-bold tracking-tight line-clamp-1 ${
+                      isSelected ? 'text-teal-200' : 'text-slate-100 group-hover:text-white'
+                    }`}>
+                      {displayName}
+                    </h3>
+                  </div>
+
+                  <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                    {sc.description || sc.tagline}
+                  </p>
+                </div>
+
+                {/* Footer status row */}
+                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] w-full">
+                  <span className={`font-semibold flex items-center gap-1.5 ${
+                    isSelected ? 'text-teal-300' : 'text-slate-500 group-hover:text-slate-300'
+                  }`}>
+                    {isSelected ? (
+                      <>
+                        <CheckCircle2 className="w-3 h-3 text-teal-400" />
+                        <span>Selected</span>
+                      </>
+                    ) : (
+                      <span>Apply Preset</span>
+                    )}
+                  </span>
+                  {isSelected && (
+                    <span className="px-1.5 py-0.2 rounded bg-teal-500/20 text-teal-300 font-mono text-[9px] font-bold uppercase tracking-wider">
+                      Active
+                    </span>
+                  )}
+                </div>
+              </button>
+            );
+          })}
         </div>
+
+        {/* Prominent Active Scenario Detail & Synchronization Bar */}
+        {activeScenario && (
+          <div className="mt-2 p-3.5 rounded-xl bg-slate-900/90 border border-teal-500/30 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs shadow-inner">
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider font-bold px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/40">
+                  Active Preset
+                </span>
+                <h4 className="font-bold text-white text-sm tracking-tight">
+                  {activeScenario.name}
+                </h4>
+                <span className="text-slate-400 text-xs hidden sm:inline">
+                  • {activeScenario.tagline}
+                </span>
+              </div>
+              <p className="text-slate-300 text-[11px] leading-relaxed max-w-3xl">
+                {activeScenario.description}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <span className="px-2.5 py-1 rounded-lg bg-black/50 border border-slate-800 text-[11px] text-slate-300 font-mono">
+                Budget: <strong className="text-amber-300 font-bold">₹{budgetCapLakhs}L</strong>
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-black/50 border border-slate-800 text-[11px] text-slate-300 font-mono">
+                Network: <strong className="text-teal-300 font-bold">{cityName}</strong>
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Network Element Mismatch Warning (if active preset targets missing junctions/corridors) */}
+        {hasTopologyMismatch && (
+          <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/50 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold block text-white text-xs">
+                  Network Element Mismatch Detected ({unavailableNodeIds.length + unavailableSegmentIds.length} Unmatched Target{unavailableNodeIds.length + unavailableSegmentIds.length === 1 ? '' : 's'})
+                </span>
+                <p className="text-[11px] text-amber-300/90 mt-0.5">
+                  The active policy targets junction IDs ({unavailableNodeIds.join(', ') || 'none'}) or corridor IDs ({unavailableSegmentIds.join(', ') || 'none'}) that are not in the current network (<strong>{cityName}</strong>).
+                  {activeScenario?.network && activeScenario.network.cityName !== cityName && (
+                    <> This plan was designed for <strong>{activeScenario.network.cityName}</strong>.</>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {activeScenario?.network && (
+              <button
+                type="button"
+                onClick={() => onLoadPreset(activeScenario.id)}
+                className="px-3.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-semibold text-xs whitespace-nowrap transition-colors shrink-0 flex items-center gap-1.5"
+              >
+                <span>Synchronize to {activeScenario.network.cityName}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Dedicated Section: Imported Real-City Candidates */}
@@ -782,32 +980,87 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
               <span className="text-[11px] font-mono text-slate-400">Capital Limit</span>
             </div>
 
-            {/* Editable Budget Cap Input */}
-            <div className="mb-4">
-              <div className="flex items-center justify-between text-xs mb-1.5">
-                <span className="text-slate-300">Municipal Budget Ceiling:</span>
-                <span className="font-mono font-bold text-white text-sm">
-                  ₹{budgetCapLakhs.toFixed(1)} Lakh
-                </span>
+            {/* Flexible Municipal Budget Ceiling Input */}
+            <div className="mb-4 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-300 font-semibold">Municipal Budget Allocation:</span>
+                <div className="text-right">
+                  <span className="font-mono font-bold text-white text-sm block">
+                    {budgetCapLakhs >= 100
+                      ? `₹${(budgetCapLakhs / 100).toFixed(2)} Cr`
+                      : `₹${budgetCapLakhs.toFixed(1)} Lakh`}
+                  </span>
+                  {budgetCapLakhs >= 100 && (
+                    <span className="text-[10px] text-teal-400 font-mono">
+                      ({budgetCapLakhs.toFixed(1)} Lakhs)
+                    </span>
+                  )}
+                </div>
               </div>
-              <input
-                type="range"
-                min="5"
-                max="25"
-                step="0.5"
-                value={budgetCapLakhs}
-                onChange={(e) =>
-                  onChangeInterventions({
-                    ...interventions,
-                    budgetCapLakhs: Number(e.target.value),
-                  })
-                }
-                className="w-full accent-amber-400 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
-              />
-              <div className="flex justify-between text-[10px] text-slate-400 mt-1">
-                <span>₹5.0 Lakh</span>
-                <span>₹15.0 Lakh</span>
-                <span>₹25.0 Lakh</span>
+
+              {/* Quick Scale Presets */}
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
+                {[
+                  { label: '₹10L', val: 10 },
+                  { label: '₹25L', val: 25 },
+                  { label: '₹50L', val: 50 },
+                  { label: '₹1 Cr', val: 100 },
+                  { label: '₹5 Cr', val: 500 },
+                  { label: '₹10 Cr', val: 1000 },
+                ].map((preset) => (
+                  <button
+                    key={preset.val}
+                    type="button"
+                    onClick={() =>
+                      onChangeInterventions({
+                        ...interventions,
+                        budgetCapLakhs: preset.val,
+                      })
+                    }
+                    className={`py-1 px-1 rounded text-[10px] font-mono font-semibold transition-colors border ${
+                      budgetCapLakhs === preset.val
+                        ? 'bg-amber-400 text-slate-950 border-amber-300'
+                        : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-600'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Direct Numerical Input & Range Slider */}
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-slate-400 text-[11px] font-mono shrink-0">₹ Lakhs:</span>
+                <input
+                  type="number"
+                  min="0.5"
+                  step="0.5"
+                  value={budgetCapLakhs}
+                  onChange={(e) => {
+                    const parsed = parseFloat(e.target.value);
+                    if (!isNaN(parsed) && parsed > 0) {
+                      onChangeInterventions({
+                        ...interventions,
+                        budgetCapLakhs: Number(parsed.toFixed(2)),
+                      });
+                    }
+                  }}
+                  className="w-24 px-2 py-1 rounded bg-slate-900 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-amber-400"
+                />
+                <input
+                  type="range"
+                  min="1"
+                  max={Math.max(50, Math.ceil(budgetCapLakhs * 1.5))}
+                  step={budgetCapLakhs > 100 ? 5 : 0.5}
+                  value={budgetCapLakhs}
+                  onChange={(e) =>
+                    onChangeInterventions({
+                      ...interventions,
+                      budgetCapLakhs: Number(e.target.value),
+                    })
+                  }
+                  className="flex-1 accent-amber-400 bg-slate-800 h-1.5 rounded-lg appearance-none cursor-pointer"
+                />
               </div>
             </div>
 
@@ -833,7 +1086,7 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
                 <span className="font-mono">
                   {busPriority.enabled
                     ? `₹${(
-                        ROAD_SEGMENTS.filter((s) => busPriority.targetSegmentIds.includes(s.id)).reduce(
+                        roadSegments.filter((s) => busPriority.targetSegmentIds.includes(s.id)).reduce(
                           (sum, s) => sum + s.lengthKm,
                           0
                         ) *
@@ -851,7 +1104,7 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
                 <span className="font-mono">
                   {greenWalkways.enabled
                     ? `₹${(
-                        ROAD_SEGMENTS.filter((s) => greenWalkways.targetSegmentIds.includes(s.id)).reduce(
+                        roadSegments.filter((s) => greenWalkways.targetSegmentIds.includes(s.id)).reduce(
                           (sum, s) => sum + s.lengthKm,
                           0
                         ) *

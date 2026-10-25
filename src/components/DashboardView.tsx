@@ -1,6 +1,6 @@
 import React from 'react';
 import { MetricCards } from './MetricCards';
-import { Scenario } from '../types/simulation';
+import { Scenario, CityNetwork } from '../types/simulation';
 import { ActiveTab } from './Sidebar';
 import { CITY_NODES, getInitialScenarios } from '../simulation/engine';
 import {
@@ -25,6 +25,7 @@ interface DashboardViewProps {
   onLoadPreset?: (scenarioId: string) => void;
   onOpenRealCity?: () => void;
   userEmail?: string | null;
+  activeNetwork?: CityNetwork;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -36,9 +37,20 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onLoadPreset,
   onOpenRealCity,
   userEmail,
+  activeNetwork,
 }) => {
   const currentResult = currentScenario.results;
   const baselineResult = baselineScenario.results;
+
+  const activeNodes = activeNetwork?.nodes || currentScenario.network?.nodes || CITY_NODES;
+  const activeSegmentsCount =
+    activeNetwork?.roadSegments?.length ||
+    currentScenario.network?.roadSegments?.length ||
+    Object.keys(currentResult.segmentResults).length;
+  const cityName =
+    activeNetwork?.cityName ||
+    currentScenario.network?.cityName ||
+    'CityTwin Benchmark Demo City';
 
   // Identify bottleneck corridors in current simulation
   const bottlenecks = Object.values(currentResult.segmentResults)
@@ -312,7 +324,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     City Network Overview
                   </h3>
                   <p className="text-xs sm:text-sm text-slate-300">
-                    4 Core Civic Sectors · 8 Monitored Corridors
+                    {activeNodes.length} Core Civic Hubs · {activeSegmentsCount} Monitored Corridors · {cityName}
                   </p>
                 </div>
               </div>
@@ -328,7 +340,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             {/* Hub Status Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-              {CITY_NODES.slice(0, 4).map((node) => {
+              {activeNodes.slice(0, 4).map((node) => {
                 const nodeRes = currentResult.nodeResults[node.id];
                 return (
                   <div

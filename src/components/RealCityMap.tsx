@@ -28,7 +28,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { CITY_NODES, ROAD_SEGMENTS } from '../simulation/engine';
-import { SimulationResult, RealCityCandidate, CandidateInterventionCategory } from '../types/simulation';
+import { SimulationResult, RealCityCandidate, CandidateInterventionCategory, CityNode, RoadSegment } from '../types/simulation';
 import { AreaImportModal } from './AreaImportModal';
 import { ImportedCityNetwork, ImportPreviewData } from '../services/osmImportService';
 
@@ -126,6 +126,8 @@ export interface RealCityMapProps {
   onOpenScenarioLab?: () => void;
   onImportNetworkToDemoCity?: (network: ImportedCityNetwork) => void;
   activeNetworkCityName?: string;
+  nodes?: CityNode[];
+  roadSegments?: RoadSegment[];
 }
 
 // Map Controls & Search Sub-Component
@@ -264,8 +266,12 @@ export function RealCityMap({
   onOpenScenarioLab,
   onImportNetworkToDemoCity,
   activeNetworkCityName,
+  nodes = CITY_NODES,
+  roadSegments = ROAD_SEGMENTS,
 }: RealCityMapProps) {
   const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
+  const activeNodes = nodes && nodes.length > 0 ? nodes : CITY_NODES;
+  const activeSegments = roadSegments && roadSegments.length > 0 ? roadSegments : ROAD_SEGMENTS;
 
   const [selectedCoord, setSelectedCoord] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedLocationName, setSelectedLocationName] = useState<string>('');
@@ -277,7 +283,7 @@ export function RealCityMap({
   const [isAddingSite, setIsAddingSite] = useState(false);
   const [newSiteName, setNewSiteName] = useState('');
   const [newSiteCategory, setNewSiteCategory] = useState<CandidateInterventionCategory>('adaptiveSignals');
-  const [newSiteMappedBenchmark, setNewSiteMappedBenchmark] = useState('hospital_junction');
+  const [newSiteMappedBenchmark, setNewSiteMappedBenchmark] = useState(activeNodes[0]?.id || 'hospital_junction');
   const [newSiteNotes, setNewSiteNotes] = useState('');
 
   // Handle map click
@@ -297,8 +303,8 @@ export function RealCityMap({
   const handleSaveCandidateSite = (autoSendToLab: boolean = false) => {
     if (!selectedCoord) return;
 
-    const validNode = CITY_NODES.find((n) => n.id === newSiteMappedBenchmark);
-    const validSeg = ROAD_SEGMENTS.find((s) => s.id === newSiteMappedBenchmark);
+    const validNode = activeNodes.find((n) => n.id === newSiteMappedBenchmark);
+    const validSeg = activeSegments.find((s) => s.id === newSiteMappedBenchmark);
     const isSimulatable = Boolean(validNode || validSeg) && newSiteMappedBenchmark !== 'unmapped';
     const mappedBenchmarkName = validNode
       ? validNode.name
@@ -747,13 +753,13 @@ export function RealCityMap({
                   className="w-full px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-white text-xs focus:outline-none focus:border-teal-400 font-mono"
                 >
                   <option value="unmapped">⚠️ None / Unmapped (Field Observation Only)</option>
-                  <optgroup label="Core Hub Nodes (Signals / Priority)">
-                    {CITY_NODES.map((n) => (
+                  <optgroup label="Active Hub Nodes (Signals / Priority)">
+                    {activeNodes.map((n) => (
                       <option key={n.id} value={n.id}>{n.name}</option>
                     ))}
                   </optgroup>
-                  <optgroup label="Key Road Segments (Transit / Walkways)">
-                    {ROAD_SEGMENTS.map((s) => (
+                  <optgroup label="Active Road Segments (Transit / Walkways)">
+                    {activeSegments.map((s) => (
                       <option key={s.id} value={s.id}>{s.name} ({s.lengthKm} km)</option>
                     ))}
                   </optgroup>

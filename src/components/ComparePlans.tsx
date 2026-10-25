@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Scenario, SegmentSimulationResult } from '../types/simulation';
 import { ROAD_SEGMENTS, MODEL_ASSUMPTIONS } from '../simulation/engine';
 import {
@@ -31,6 +31,13 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
   const [scenarioBId, setScenarioBId] = useState<string>(activeScenario.id);
   const [showAssumptionDrawer, setShowAssumptionDrawer] = useState<boolean>(false);
 
+  // Synchronize Plan B selection with active scenario when activeScenario updates
+  useEffect(() => {
+    if (activeScenario?.id) {
+      setScenarioBId(activeScenario.id);
+    }
+  }, [activeScenario?.id]);
+
   const planA = scenarios.find((s) => s.id === scenarioAId) || baselineScenario;
   const planB = scenarios.find((s) => s.id === scenarioBId) || activeScenario;
 
@@ -61,6 +68,10 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
     10
   );
 
+  const cityA = planA.network?.cityName || 'Benchmark Demo City';
+  const cityB = planB.network?.cityName || 'Benchmark Demo City';
+  const isCrossNetwork = cityA !== cityB;
+
   return (
     <div className="space-y-6">
       {/* Plan Selectors Bar */}
@@ -73,7 +84,7 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
                 Plan Comparison Dashboard
               </h2>
               <p className="text-xs text-slate-400">
-                Auditing systemic changes between baseline and proposed interventions.
+                Auditing systemic changes between reference baseline and proposed interventions.
               </p>
             </div>
           </div>
@@ -87,12 +98,31 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
           </button>
         </div>
 
+        {/* Cross Network Notice Banner */}
+        {isCrossNetwork && (
+          <div className="mt-4 p-3 rounded-xl bg-amber-950/60 border border-amber-500/50 text-amber-200 text-xs flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <strong className="block text-white">Cross-Network Comparison Detected</strong>
+              <span>
+                Plan A is configured for <strong>{cityA}</strong>, while Plan B is configured for{' '}
+                <strong>{cityB}</strong>. Direct deltas reflect distinct network layouts and baseline topographies.
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Dual Selectors */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
           <div className="p-3.5 bg-slate-900/60 border border-slate-800 rounded-lg">
-            <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-1.5">
-              Plan A (Reference / Baseline):
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block">
+                Plan A (Reference / Baseline):
+              </label>
+              <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700">
+                {cityA}
+              </span>
+            </div>
             <select
               value={scenarioAId}
               onChange={(e) => setScenarioAId(e.target.value)}
@@ -110,9 +140,14 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
           </div>
 
           <div className="p-3.5 bg-slate-900/60 border border-teal-500/40 rounded-lg">
-            <label className="text-[11px] font-semibold text-teal-400 uppercase tracking-wider block mb-1.5">
-              Plan B (Proposed Interventions):
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[11px] font-semibold text-teal-400 uppercase tracking-wider block">
+                Plan B (Proposed Interventions):
+              </label>
+              <span className="text-[10px] font-mono text-teal-300 px-1.5 py-0.5 rounded bg-teal-950/80 border border-teal-700/60">
+                {cityB}
+              </span>
+            </div>
             <select
               value={scenarioBId}
               onChange={(e) => setScenarioBId(e.target.value)}
@@ -409,11 +444,13 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">
-              {ROAD_SEGMENTS.map((seg) => {
+              {comparedSegments.map((seg) => {
                 const resA = planA.results.segmentResults[seg.id];
                 const resB = planB.results.segmentResults[seg.id];
 
-                const co2Delta = Number((resB.emissionsKgCO2 - resA.emissionsKgCO2).toFixed(1));
+                const co2A = resA?.emissionsKgCO2 ?? 0;
+                const co2B = resB?.emissionsKgCO2 ?? 0;
+                const co2Delta = Number((co2B - co2A).toFixed(1));
 
                 return (
                   <tr key={`row-${seg.id}`} className="hover:bg-slate-900/40 transition-colors">
@@ -424,13 +461,13 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
                       {seg.lengthKm} km
                     </td>
                     <td className="py-3 px-3 text-right text-slate-400">
-                      {resA.volumeToCapacityRatio}
+                      {resA ? resA.volumeToCapacityRatio : 'N/A'}
                     </td>
                     <td className="py-3 px-3 text-right font-bold text-teal-300">
-                      {resB.volumeToCapacityRatio}
+                      {resB ? resB.volumeToCapacityRatio : 'N/A'}
                     </td>
                     <td className="py-3 px-3 text-right text-slate-300">
-                      {resA.averageSpeedKmh} → {resB.averageSpeedKmh} km/h
+                      {resA ? `${resA.averageSpeedKmh} km/h` : 'N/A'} → {resB ? `${resB.averageSpeedKmh} km/h` : 'N/A'}
                     </td>
                     <td className={`py-3 px-3 text-right font-semibold ${
                       co2Delta < 0 ? 'text-emerald-400' : co2Delta > 0 ? 'text-rose-400' : 'text-slate-400'
@@ -438,17 +475,21 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
                       {co2Delta > 0 ? `+${co2Delta}` : co2Delta} kg
                     </td>
                     <td className="py-3 px-4 text-center font-sans">
-                      <span
-                        className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                          resB.congestionLevel === 'low'
-                            ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
-                            : resB.congestionLevel === 'moderate'
-                            ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
-                            : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
-                        }`}
-                      >
-                        {resB.congestionLevel.toUpperCase()}
-                      </span>
+                      {resB ? (
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                            resB.congestionLevel === 'low'
+                              ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-800/60'
+                              : resB.congestionLevel === 'moderate'
+                              ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60'
+                              : 'bg-rose-950/60 text-rose-300 border border-rose-800/60'
+                          }`}
+                        >
+                          {resB.congestionLevel.toUpperCase()}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-500 font-mono">N/A</span>
+                      )}
                     </td>
                   </tr>
                 );

@@ -3,6 +3,8 @@ import {
   ValidatedPlanningResult,
   ScenarioInterventions,
   OptimizationObjective,
+  CityNode,
+  RoadSegment,
 } from '../types/simulation';
 import { CITY_NODES, ROAD_SEGMENTS, BASELINE_INTERVENTIONS } from './engine';
 
@@ -19,11 +21,22 @@ export const VALID_OBJECTIVES: OptimizationObjective[] = [
 
 /**
  * Validates and converts a structured Gemini planning response into concrete CityTwin scenario inputs.
- * Strictly verifies locations, numerical boundaries, supported intervention types, and budget rules.
+ * Strictly verifies locations against active network topology, numerical boundaries, supported intervention types,
+ * and flexible municipal budget rules (supporting lakhs and multi-crore allocations).
  */
-export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
+export function validateGeminiPlan(
+  raw: any,
+  customNodes?: CityNode[],
+  customSegments?: RoadSegment[],
+  maxBudgetSafetyCap: number = 1000000
+): ValidatedPlanningResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  const activeNodes = customNodes && customNodes.length > 0 ? customNodes : CITY_NODES;
+  const activeSegments = customSegments && customSegments.length > 0 ? customSegments : ROAD_SEGMENTS;
+  const validNodeIds = activeNodes.map((n) => n.id);
+  const validSegmentIds = activeSegments.map((s) => s.id);
 
   // 1. Malformed payload check
   if (!raw || typeof raw !== 'object') {
@@ -64,11 +77,15 @@ export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
   rawLocations.forEach((loc: any) => {
     if (typeof loc === 'string') {
       const cleanLoc = loc.trim().toLowerCase();
-      // Match exact ID or loose node/road name
-      const matchedNode = CITY_NODES.find(
-        (n) => n.id === cleanLoc || n.name.toLowerCase().includes(cleanLoc) || cleanLoc.includes(n.id)
+      // Match exact ID or loose node/road name in active network
+      const matchedNode = activeNodes.find(
+        (n) =>
+          n.id === cleanLoc ||
+          n.name.toLowerCase().includes(cleanLoc) ||
+          cleanLoc.includes(n.id) ||
+          (n.shortName && n.shortName.toLowerCase().includes(cleanLoc))
       );
-      const matchedSeg = ROAD_SEGMENTS.find(
+      const matchedSeg = activeSegments.find(
         (s) => s.id === cleanLoc || s.name.toLowerCase().includes(cleanLoc) || cleanLoc.includes(s.id)
       );
 
@@ -83,21 +100,22 @@ export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
   });
 
   if (unsupportedLocations.length > 0) {
+    const availableNames = activeNodes.slice(0, 5).map((n) => n.name).join(', ');
     errors.push(
-      `Unsupported or unknown locations: ${unsupportedLocations.join(', ')}. CityTwin only covers Hospital Junction, College Road, Market Square, Residential District, North Expressway, and Tech Park.`
+      `Unsupported or unknown locations: ${unsupportedLocations.join(', ')}. Available hubs in active city network: ${availableNames}.`
     );
   }
 
-  // 4. Validate budget
+  // 4. Validate budget with flexible municipal ceiling (up to Crores)
   let budgetCapLakhs = 15.0;
   if (raw.budgetCapLakhs !== null && raw.budgetCapLakhs !== undefined) {
     const parsedBudget = Number(raw.budgetCapLakhs);
     if (isNaN(parsedBudget) || parsedBudget <= 0) {
-      warnings.push(`Invalid budget "${raw.budgetCapLakhs}" received; defaulted to standard municipal cap of ₹15.0 Lakh.`);
+      warnings.push(`Invalid non-positive budget "${raw.budgetCapLakhs}" received; defaulted to standard municipal cap of ₹15.0 Lakh.`);
       budgetCapLakhs = 15.0;
-    } else if (parsedBudget > 50.0) {
-      warnings.push(`Budget cap of ₹${parsedBudget}L exceeds maximum municipal limit (₹50.0L); clamped to ₹50.0 Lakh.`);
-      budgetCapLakhs = 50.0;
+    } else if (parsedBudget > maxBudgetSafetyCap) {
+      warnings.push(`Budget cap of ₹${parsedBudget}L exceeds maximum municipal allocation safety cap (₹${maxBudgetSafetyCap}L); clamped.`);
+      budgetCapLakhs = maxBudgetSafetyCap;
     } else {
       budgetCapLakhs = Number(parsedBudget.toFixed(2));
     }
@@ -175,17 +193,21 @@ export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
       let nodes = Array.isArray(item.targetLocations) ? item.targetLocations : [];
       nodes = nodes
         .map((loc: string) => {
-          const match = CITY_NODES.find(
-            (n) => n.id === loc || n.name.toLowerCase().includes(loc.toLowerCase())
+          const clean = String(loc).toLowerCase().trim();
+          const match = activeNodes.find(
+            (n) =>
+              n.id === clean ||
+              n.name.toLowerCase().includes(clean) ||
+              clean.includes(n.id) ||
+              (n.shortName && n.shortName.toLowerCase().includes(clean))
           );
           return match?.id;
         })
-        .filter((id: string | undefined): id is string => Boolean(id) && VALID_NODE_IDS.includes(id!));
+        .filter((id: string | undefined): id is string => Boolean(id) && validNodeIds.includes(id!));
 
       let optLevel = 3;
       if (item.parameters && typeof item.parameters.optimizationLevel === 'number') {
         const rawOpt = item.parameters.optimizationLevel;
-        // If provided as a decimal 0.0 - 1.0, scale to 1 - 5
         optLevel = rawOpt <= 1.0 && rawOpt > 0
           ? Math.max(1, Math.min(5, Math.round(rawOpt * 5)))
           : Math.max(1, Math.min(5, Math.round(rawOpt)));
@@ -202,15 +224,16 @@ export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
       let segs = Array.isArray(item.targetLocations) ? item.targetLocations : [];
       segs = segs
         .map((loc: string) => {
-          const match = ROAD_SEGMENTS.find(
-            (s) => s.id === loc || s.name.toLowerCase().includes(loc.toLowerCase())
+          const clean = String(loc).toLowerCase().trim();
+          const match = activeSegments.find(
+            (s) => s.id === clean || s.name.toLowerCase().includes(clean) || clean.includes(s.id)
           );
           return match?.id;
         })
         .filter((id: string | undefined): id is string => {
           if (!id) return false;
-          const road = ROAD_SEGMENTS.find((s) => s.id === id);
-          return Boolean(road && road.hasTransitCorridorPotential);
+          const road = activeSegments.find((s) => s.id === id);
+          return Boolean(road && (road.hasTransitCorridorPotential || activeSegments.length <= 4));
         });
 
       let dedicatedLane = false;
@@ -242,15 +265,16 @@ export function validateGeminiPlan(raw: any): ValidatedPlanningResult {
       let segs = Array.isArray(item.targetLocations) ? item.targetLocations : [];
       segs = segs
         .map((loc: string) => {
-          const match = ROAD_SEGMENTS.find(
-            (s) => s.id === loc || s.name.toLowerCase().includes(loc.toLowerCase())
+          const clean = String(loc).toLowerCase().trim();
+          const match = activeSegments.find(
+            (s) => s.id === clean || s.name.toLowerCase().includes(clean) || clean.includes(s.id)
           );
           return match?.id;
         })
         .filter((id: string | undefined): id is string => {
           if (!id) return false;
-          const road = ROAD_SEGMENTS.find((s) => s.id === id);
-          return Boolean(road && road.hasActiveMobilityPotential);
+          const road = activeSegments.find((s) => s.id === id);
+          return Boolean(road && (road.hasActiveMobilityPotential || activeSegments.length <= 4));
         });
 
       let pedestrianizeMarketSquare = false;

@@ -1,8 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ImportPreviewData,
   getCityNetworkForImport,
+  getSyntheticFallbackForArea,
   calculateBoundingBox,
+  searchGeographicLocation,
+  GeoSearchResult,
   CURATED_CITY_IMPORT_PRESETS,
 } from '../services/osmImportService';
 import {
@@ -12,12 +15,13 @@ import {
   X,
   Compass,
   MapPin,
-  Layers,
+  Search,
   ArrowRight,
   RefreshCw,
   Info,
   ShieldAlert,
   Sparkles,
+  ExternalLink,
 } from 'lucide-react';
 
 interface AreaImportModalProps {
@@ -35,16 +39,63 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
   targetLocationName,
   onConfirmImport,
 }) => {
+  const [cityName, setCityName] = useState<string>('Selected Real-City Area');
+  const [coords, setCoords] = useState<{ lat: number; lng: number }>({ lat: 12.9716, lng: 77.5946 });
   const [radiusMeters, setRadiusMeters] = useState<number>(1200);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [previewData, setPreviewData] = useState<ImportPreviewData | null>(null);
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<GeoSearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (targetCoords) {
+      setCoords(targetCoords);
+    }
+    if (targetLocationName) {
+      setCityName(targetLocationName);
+      setSearchQuery(targetLocationName);
+    }
+  }, [targetCoords, targetLocationName]);
+
   if (!isOpen) return null;
 
-  const currentCoords = targetCoords || { lat: 12.9716, lng: 77.5946 };
-  const currentName = targetLocationName || 'Selected Real-City Area';
-  const bbox = calculateBoundingBox(currentCoords.lat, currentCoords.lng, radiusMeters);
+  const bbox = calculateBoundingBox(coords.lat, coords.lng, radiusMeters);
+
+  const handleLocationSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    try {
+      const results = await searchGeographicLocation(searchQuery);
+      setSearchResults(results);
+      if (results.length > 0) {
+        const top = results[0];
+        setCoords({ lat: top.lat, lng: top.lng });
+        setCityName(top.name);
+        setPreviewData(null);
+        setError(null);
+      } else {
+        setError(`No geographic locations found for "${searchQuery}". Please try another search term or enter coordinates directly.`);
+      }
+    } catch (err: any) {
+      setError(`Location lookup error: ${err.message || 'Failed to search places'}`);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleSelectSearchResult = (result: GeoSearchResult) => {
+    setCoords({ lat: result.lat, lng: result.lng });
+    setCityName(result.name);
+    setSearchQuery(result.name);
+    setSearchResults([]);
+    setPreviewData(null);
+    setError(null);
+  };
 
   const handleFetchPreview = async (selectedPresetKey?: string) => {
     setIsLoading(true);
@@ -54,6 +105,9 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
       let data: ImportPreviewData;
       if (selectedPresetKey && CURATED_CITY_IMPORT_PRESETS[selectedPresetKey]) {
         const preset = CURATED_CITY_IMPORT_PRESETS[selectedPresetKey];
+        setCityName(preset.cityName);
+        setCoords(preset.centerCoords);
+        setRadiusMeters(preset.radiusMeters);
         data = {
           cityName: preset.cityName,
           centerCoords: preset.centerCoords,
@@ -67,12 +121,30 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
           rawNetwork: preset,
         };
       } else {
-        data = await getCityNetworkForImport(currentName, currentCoords, radiusMeters);
+        data = await getCityNetworkForImport(cityName, coords, radiusMeters);
       }
       setPreviewData(data);
     } catch (err: any) {
       console.error('Failed to import road network:', err);
       setError(err?.message || 'Failed to retrieve road network data for the specified bounding box.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGenerateSyntheticFallback = () => {
+    setIsLoading(true);
+    try {
+      const data = getSyntheticFallbackForArea(
+        cityName,
+        coords,
+        radiusMeters,
+        `OSM Overpass public mirror was unreachable. Generated localized geometric benchmark grid for (${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}).`
+      );
+      setPreviewData(data);
+      setError(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate synthetic grid.');
     } finally {
       setIsLoading(false);
     }
@@ -95,10 +167,10 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white tracking-tight">
-                Import Real City Road Network
+                Universal Geographic Road Network Import
               </h2>
               <p className="text-xs text-slate-400">
-                Extract OpenStreetMap road geometry and load it directly into Demo City simulation.
+                Extract OpenStreetMap road topology for any global city, town, or neighborhood into CityTwin.
               </p>
             </div>
           </div>
@@ -112,6 +184,51 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
 
         {/* Body */}
         <div className="p-6 overflow-y-auto space-y-5 text-xs text-slate-300">
+          {/* Global Location Search Form */}
+          <form onSubmit={handleLocationSearch} className="space-y-2">
+            <label className="text-[11px] font-semibold text-slate-200 block">
+              Search Any Global City, Town, or Neighborhood:
+            </label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="e.g., Tokyo, Paris, Queens NY, Indiranagar Bengaluru..."
+                  className="w-full pl-9 pr-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-teal-400"
+                />
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              </div>
+              <button
+                type="submit"
+                disabled={isSearching}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-teal-300 font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
+              >
+                {isSearching ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <MapPin className="w-3.5 h-3.5" />}
+                <span>Locate</span>
+              </button>
+            </div>
+
+            {/* Search Suggestions Dropdown */}
+            {searchResults.length > 1 && (
+              <div className="p-2 bg-slate-900 border border-slate-700 rounded-xl space-y-1">
+                <span className="text-[10px] text-slate-400 uppercase font-semibold px-2">Matching Locations:</span>
+                {searchResults.map((res, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => handleSelectSearchResult(res)}
+                    className="w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-800 text-slate-200 text-xs flex items-center justify-between"
+                  >
+                    <span className="font-semibold">{res.name}</span>
+                    <span className="text-[10px] text-slate-400 font-mono truncate max-w-xs">{res.displayName}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </form>
+
           {/* Selected Location Card */}
           <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3">
             <div className="flex items-start justify-between gap-3">
@@ -119,9 +236,16 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-teal-400">
                   Target Geographic Area
                 </span>
-                <div className="text-sm font-bold text-white mt-0.5">{currentName}</div>
-                <div className="text-slate-400 font-mono text-[11px] mt-0.5">
-                  Center: {currentCoords.lat.toFixed(5)}, {currentCoords.lng.toFixed(5)}
+                <input
+                  type="text"
+                  value={cityName}
+                  onChange={(e) => setCityName(e.target.value)}
+                  className="text-sm font-bold text-white mt-0.5 bg-transparent border-b border-transparent hover:border-slate-700 focus:border-teal-400 focus:outline-none w-full"
+                />
+                <div className="text-slate-400 font-mono text-[11px] mt-1 flex items-center gap-2">
+                  <span>Lat: {coords.lat.toFixed(5)}</span>
+                  <span>·</span>
+                  <span>Lng: {coords.lng.toFixed(5)}</span>
                 </div>
               </div>
               <span className="px-2.5 py-1 rounded-full text-[10px] font-mono bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">
@@ -162,14 +286,14 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
             </div>
           </div>
 
-          {/* Quick Real-City Presets */}
+          {/* Optional Sample Curated Presets */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                Featured Pre-Normalized Metropolitan Corridors:
+                Optional Sample Metropolitan Corridors:
               </span>
-              <span className="text-[10px] text-slate-500">Instant 1-Click Load</span>
+              <span className="text-[10px] text-slate-500">Fast 1-Click Example</span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               <button
@@ -210,24 +334,47 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
               {isLoading ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Querying OpenStreetMap Overpass API...</span>
+                  <span>Querying OpenStreetMap Overpass API for {cityName}...</span>
                 </>
               ) : (
                 <>
                   <Compass className="w-4 h-4" />
-                  <span>Fetch Road Network for {currentName.split(',')[0]}</span>
+                  <span>Fetch Road Network for {cityName.split(',')[0]}</span>
                 </>
               )}
             </button>
           )}
 
-          {/* Error Message */}
+          {/* Error Message with Explicit Fallback Options */}
           {error && (
-            <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-800 text-rose-300 flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <div>
-                <strong className="block text-white">Import Notice</strong>
-                <p className="text-[11px] leading-relaxed">{error}</p>
+            <div className="p-4 rounded-xl bg-rose-950/80 border border-rose-800 text-rose-300 space-y-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div>
+                  <strong className="block text-white">Import Error</strong>
+                  <p className="text-[11px] leading-relaxed mt-0.5">{error}</p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-2 pt-2 border-t border-rose-900/60">
+                <button
+                  type="button"
+                  onClick={() => handleFetchPreview()}
+                  disabled={isLoading}
+                  className="w-full sm:w-auto px-3.5 py-1.5 rounded-lg bg-rose-900 hover:bg-rose-800 text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry Live Query</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateSyntheticFallback}
+                  disabled={isLoading}
+                  className="w-full sm:w-auto px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-semibold text-xs flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generate Localized Geo-Grid (Synthetic Approximation)</span>
+                </button>
               </div>
             </div>
           )}
@@ -240,11 +387,21 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                   <div className="flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 text-teal-400" />
                     <span className="font-bold text-white text-sm">
-                      Network Extracted Successfully
+                      Network Extracted Successfully: {previewData.cityName}
                     </span>
                   </div>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-teal-500/20 text-teal-300 border border-teal-500/40">
-                    {previewData.source === 'osm_live' ? 'Live OSM Query' : 'Verified GIS Preset'}
+                  <span className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-semibold border ${
+                    previewData.source === 'osm_live'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                      : previewData.source === 'osm_preset'
+                      ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                      : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  }`}>
+                    {previewData.source === 'osm_live'
+                      ? 'Live OSM Query'
+                      : previewData.source === 'osm_preset'
+                      ? 'Verified GIS Preset'
+                      : 'Synthetic Geometric Grid'}
                   </span>
                 </div>
 
@@ -270,14 +427,14 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                   </div>
                   <div className="p-2.5 rounded-lg bg-black/40 border border-slate-800">
                     <div className="text-lg font-bold text-emerald-400 font-mono">100%</div>
-                    <div className="text-[10px] text-slate-400">Simulatable</div>
+                    <div className="text-[10px] text-slate-400">BPR Simulatable</div>
                   </div>
                 </div>
 
                 {/* Extracted Road Corridors Preview */}
                 <div className="space-y-1.5 pt-2 border-t border-slate-800/80">
                   <div className="text-[11px] font-semibold text-slate-200">
-                    Key Road Corridors Detected:
+                    Key Road Corridors Detected ({previewData.majorRoads.length}):
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                     {previewData.majorRoads.map((road, idx) => (
@@ -296,7 +453,7 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                   <div className="p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-[11px] text-amber-300 space-y-1">
                     <div className="font-semibold flex items-center gap-1.5">
                       <Info className="w-3.5 h-3.5 text-amber-400" />
-                      Topology Normalization Notes:
+                      Data &amp; Calibration Disclaimers:
                     </div>
                     {previewData.warnings.map((w, i) => (
                       <div key={i} className="text-[10px] text-amber-300/90 pl-3">
@@ -306,11 +463,11 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                   </div>
                 )}
 
-                {/* Important Overwrite Warning */}
-                <div className="p-3 rounded-lg bg-slate-900 border border-amber-500/30 text-[11px] text-slate-300 flex items-start gap-2">
-                  <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                {/* Confirmation Box */}
+                <div className="p-3 rounded-lg bg-slate-900 border border-teal-500/30 text-[11px] text-slate-300 flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
                   <p>
-                    <strong>Confirmation:</strong> Confirming will load this network into Demo City for live simulation and editing. You can restore the original Demo City at any time using the <em>&quot;Restore Original Demo City&quot;</em> button.
+                    <strong>Confirmation:</strong> Confirming will load this network into Demo City, Scenario Lab, Compare Plans, and AI Assistant for live simulation. You can restore the original Demo City at any time.
                   </p>
                 </div>
               </div>
@@ -329,12 +486,18 @@ export const AreaImportModal: React.FC<AreaImportModalProps> = ({
                   onClick={handleConfirm}
                   className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-teal-600 hover:from-teal-400 hover:to-teal-500 text-slate-950 font-bold transition-all shadow-md flex items-center justify-center gap-1.5"
                 >
-                  <span>Confirm &amp; Load into Demo City</span>
+                  <span>Confirm &amp; Load into Simulation</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
             </div>
           )}
+
+          {/* OpenStreetMap Attribution Footer */}
+          <div className="pt-3 border-t border-slate-800/80 text-[10px] text-slate-400 flex items-center justify-between">
+            <span>Map data © OpenStreetMap contributors, licensed under Open Database License (ODbL).</span>
+            <span className="text-teal-400 font-mono">CityTwin GIS Engine</span>
+          </div>
         </div>
       </div>
     </div>

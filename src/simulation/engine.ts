@@ -5,6 +5,7 @@ import {
   SimulationResult,
   SegmentSimulationResult,
   Scenario,
+  CityNetwork,
 } from '../types/simulation';
 
 export const CITY_NODES: CityNode[] = [
@@ -256,7 +257,8 @@ export function runSimulation(
       delayReductionPercent = 0.08 + adaptiveSignals.optimizationLevel * 0.05;
     }
 
-    const effectiveDelaySeconds = Math.round(node.baselineDelaySeconds * (1 - delayReductionPercent));
+    const baseDelay = node.baselineDelaySeconds ?? (node as any).baseDelaySeconds ?? 45;
+    const effectiveDelaySeconds = Math.round(baseDelay * (1 - delayReductionPercent));
     nodeResults[node.id] = {
       nodeId: node.id,
       effectiveDelaySeconds,
@@ -576,16 +578,197 @@ export const GREEN_ACTIVE_INTERVENTIONS: ScenarioInterventions = {
   budgetCapLakhs: 14.0,
 };
 
+export const TRANSIT_MODESHARE_INTERVENTIONS: ScenarioInterventions = {
+  adaptiveSignals: {
+    enabled: true,
+    targetNodeIds: ['hospital_junction', 'market_square', 'college_road', 'residential_district'],
+    optimizationLevel: 5,
+    costPerNodeLakhs: 1.5,
+  },
+  busPriority: {
+    enabled: true,
+    targetSegmentIds: ['seg_res_college', 'seg_college_hospital', 'seg_hospital_market', 'seg_res_market'],
+    dedicatedLane: true,
+    frequencyMin: 4,
+    electricFleetShare: 90,
+    costPerKmLakhs: 2.2,
+  },
+  greenWalkways: {
+    enabled: false,
+    targetSegmentIds: [],
+    pedestrianizeMarketSquare: false,
+    canopyCoverageDensity: 2,
+    costPerKmLakhs: 1.1,
+  },
+  budgetCapLakhs: 25.0,
+};
+
+// Dharmasthala Authentic Pilgrimage Network & Interventions
+export const DHARMASTHALA_NODES: CityNode[] = [
+  {
+    id: 'node_dharmasthala_temple',
+    name: 'Manjunatha Swamy Temple Circle',
+    shortName: 'Temple Circle',
+    zone: 'commercial',
+    x: 480,
+    y: 180,
+    description: 'Central temple circle, queue line approach and pedestrian sanctum buffer.',
+    criticalityNote: 'Acute pilgrim vehicular congestion and pedestrian crossing conflicts during peak darshan hours',
+    baselineDelaySeconds: 155,
+  },
+  {
+    id: 'node_dharmasthala_bus_stand',
+    name: 'KSRTC Central Bus Stand Hub',
+    shortName: 'Bus Stand',
+    zone: 'highway',
+    x: 230,
+    y: 360,
+    description: 'Inter-district regional bus terminal, private tourist coach staging and pilgrim arrival.',
+    criticalityNote: 'Mass bus arrivals causing bottlenecking at the primary town entrance gateway',
+    baselineDelaySeconds: 120,
+  },
+  {
+    id: 'node_dharmasthala_netravati',
+    name: 'Netravati River Holy Ghatta',
+    shortName: 'Netravati Ghat',
+    zone: 'residential',
+    x: 720,
+    y: 370,
+    description: 'Sacred riverfront bathing ghats and peripheral parking access.',
+    criticalityNote: 'High pedestrian walking volume towards temple complex along riverbanks',
+    baselineDelaySeconds: 80,
+  },
+  {
+    id: 'node_dharmasthala_annapoorna',
+    name: 'Annapoorna Mass Dining Hall Hub',
+    shortName: 'Annapoorna Hall',
+    zone: 'commercial',
+    x: 520,
+    y: 440,
+    description: 'Daily community dining hall serving over 30,000 pilgrims with heavy pedestrian flows.',
+    criticalityNote: 'Intense pedestrian movement between main shrine and dining complex',
+    baselineDelaySeconds: 100,
+  },
+];
+
+export const DHARMASTHALA_ROAD_SEGMENTS: RoadSegment[] = [
+  {
+    id: 'seg_dharmasthala_bus_temple',
+    name: 'Car Street Transit Spine (Bus Stand to Temple)',
+    fromNodeId: 'node_dharmasthala_bus_stand',
+    toNodeId: 'node_dharmasthala_temple',
+    lengthKm: 1.8,
+    lanes: 2,
+    baseVolumePerHour: 1850,
+    baseCapacityPerHour: 1600,
+    freeFlowSpeedKmh: 35,
+    hasTransitCorridorPotential: true,
+    hasActiveMobilityPotential: true,
+    curvedVia: { x: 330, y: 240 },
+  },
+  {
+    id: 'seg_dharmasthala_netravati_temple',
+    name: 'Netravati River Pilgrim Walkway',
+    fromNodeId: 'node_dharmasthala_netravati',
+    toNodeId: 'node_dharmasthala_temple',
+    lengthKm: 2.2,
+    lanes: 2,
+    baseVolumePerHour: 1300,
+    baseCapacityPerHour: 1500,
+    freeFlowSpeedKmh: 40,
+    hasTransitCorridorPotential: true,
+    hasActiveMobilityPotential: true,
+    curvedVia: { x: 620, y: 250 },
+  },
+  {
+    id: 'seg_dharmasthala_temple_annapoorna',
+    name: 'Temple to Annapoorna Dining Hall Pedestrian Link',
+    fromNodeId: 'node_dharmasthala_temple',
+    toNodeId: 'node_dharmasthala_annapoorna',
+    lengthKm: 0.9,
+    lanes: 2,
+    baseVolumePerHour: 1450,
+    baseCapacityPerHour: 1300,
+    freeFlowSpeedKmh: 30,
+    hasTransitCorridorPotential: false,
+    hasActiveMobilityPotential: true,
+    curvedVia: { x: 510, y: 310 },
+  },
+  {
+    id: 'seg_dharmasthala_bus_annapoorna',
+    name: 'Bus Stand to Annapoorna Southern Feeder',
+    fromNodeId: 'node_dharmasthala_bus_stand',
+    toNodeId: 'node_dharmasthala_annapoorna',
+    lengthKm: 1.6,
+    lanes: 2,
+    baseVolumePerHour: 1150,
+    baseCapacityPerHour: 1400,
+    freeFlowSpeedKmh: 40,
+    hasTransitCorridorPotential: true,
+    hasActiveMobilityPotential: false,
+    curvedVia: { x: 370, y: 420 },
+  },
+];
+
+export const DHARMASTHALA_NETWORK: CityNetwork = {
+  nodes: DHARMASTHALA_NODES,
+  roadSegments: DHARMASTHALA_ROAD_SEGMENTS,
+  cityName: 'Dharmasthala Pilgrimage & Transit Corridor',
+  isImported: true,
+  source: 'osm_preset',
+  centerCoords: { lat: 12.9564, lng: 75.3789 },
+  radiusMeters: 1800,
+  originalNodesCount: 4,
+  originalSegmentsCount: 4,
+  updatedAt: '2026-10-24T00:00:00Z',
+};
+
+export const DHARMASTHALA_INTERVENTIONS: ScenarioInterventions = {
+  adaptiveSignals: {
+    enabled: true,
+    targetNodeIds: ['node_dharmasthala_temple', 'node_dharmasthala_bus_stand'],
+    optimizationLevel: 4,
+    costPerNodeLakhs: 1.5,
+  },
+  busPriority: {
+    enabled: true,
+    targetSegmentIds: ['seg_dharmasthala_bus_temple'],
+    dedicatedLane: true,
+    frequencyMin: 4,
+    electricFleetShare: 70,
+    costPerKmLakhs: 2.2,
+  },
+  greenWalkways: {
+    enabled: true,
+    targetSegmentIds: ['seg_dharmasthala_netravati_temple', 'seg_dharmasthala_temple_annapoorna'],
+    pedestrianizeMarketSquare: true,
+    canopyCoverageDensity: 4,
+    costPerKmLakhs: 1.1,
+  },
+  budgetCapLakhs: 20.0,
+};
+
+export const BENCHMARK_DEMO_NETWORK: CityNetwork = {
+  nodes: CITY_NODES,
+  roadSegments: ROAD_SEGMENTS,
+  cityName: 'CityTwin Benchmark Demo City',
+  isImported: false,
+  source: 'demo',
+};
+
 // Initial Scenarios Store
 export function getInitialScenarios(): Scenario[] {
-  const baselineResults = runSimulation(BASELINE_INTERVENTIONS);
-  const hospitalReliefResults = runSimulation(HOSPITAL_RELIEF_INTERVENTIONS);
-  const transitPriorityResults = runSimulation(TRANSIT_PRIORITY_INTERVENTIONS);
-  const greenActiveResults = runSimulation(GREEN_ACTIVE_INTERVENTIONS);
+  const baselineResults = runSimulation(BASELINE_INTERVENTIONS, CITY_NODES, ROAD_SEGMENTS);
+  const hospitalReliefResults = runSimulation(HOSPITAL_RELIEF_INTERVENTIONS, CITY_NODES, ROAD_SEGMENTS);
+  const transitPriorityResults = runSimulation(TRANSIT_PRIORITY_INTERVENTIONS, CITY_NODES, ROAD_SEGMENTS);
+  const greenActiveResults = runSimulation(GREEN_ACTIVE_INTERVENTIONS, CITY_NODES, ROAD_SEGMENTS);
+  const transitModeShareResults = runSimulation(TRANSIT_MODESHARE_INTERVENTIONS, CITY_NODES, ROAD_SEGMENTS);
+  const dharmasthalaResults = runSimulation(DHARMASTHALA_INTERVENTIONS, DHARMASTHALA_NODES, DHARMASTHALA_ROAD_SEGMENTS);
 
   return [
     {
       id: 'scenario_baseline',
+      shortName: 'Baseline Network',
       name: 'Baseline City Network',
       tagline: 'Current Unmanaged Peak-Hour Conditions',
       description: 'Zero intervention state with acute bottlenecking at Hospital Junction and College Road. High emissions and vehicle queuing.',
@@ -594,9 +777,11 @@ export function getInitialScenarios(): Scenario[] {
       interventions: BASELINE_INTERVENTIONS,
       results: baselineResults,
       updatedAt: new Date().toISOString(),
+      network: BENCHMARK_DEMO_NETWORK,
     },
     {
       id: 'scenario_hospital_relief',
+      shortName: 'Hospital Relief',
       name: 'Hospital Junction Emergency Relief',
       tagline: 'Featured Preset: Targeted Healthcare Corridor Optimization',
       description: 'Coordinated adaptive signals at Hospital & College hubs paired with a dedicated transit lane and shaded emergency buffer. Conforms to ₹10–₹12 Lakh municipal budget.',
@@ -604,9 +789,11 @@ export function getInitialScenarios(): Scenario[] {
       interventions: HOSPITAL_RELIEF_INTERVENTIONS,
       results: hospitalReliefResults,
       updatedAt: new Date().toISOString(),
+      network: BENCHMARK_DEMO_NETWORK,
     },
     {
       id: 'scenario_transit_priority',
+      shortName: 'Rapid Transit Spine',
       name: 'Rapid Transit Spine',
       tagline: 'High-Frequency Bus Priority Corridor',
       description: 'Full 4-minute headway rapid electric bus corridor along major employment spine with signal preemption at all central junctions.',
@@ -614,9 +801,11 @@ export function getInitialScenarios(): Scenario[] {
       interventions: TRANSIT_PRIORITY_INTERVENTIONS,
       results: transitPriorityResults,
       updatedAt: new Date().toISOString(),
+      network: BENCHMARK_DEMO_NETWORK,
     },
     {
       id: 'scenario_green_active',
+      shortName: 'Green Mobility',
       name: 'Ecological & Active Streets',
       tagline: 'Market Square Pedestrianization & Green Buffers',
       description: 'Pedestrianized commercial bazaar with dense urban tree canopies and protected micro-mobility routes diverting short vehicle trips.',
@@ -624,6 +813,31 @@ export function getInitialScenarios(): Scenario[] {
       interventions: GREEN_ACTIVE_INTERVENTIONS,
       results: greenActiveResults,
       updatedAt: new Date().toISOString(),
+      network: BENCHMARK_DEMO_NETWORK,
+    },
+    {
+      id: 'scenario_transit_modeshare',
+      shortName: 'Transit Mode-Share',
+      name: 'Transit Mode-Share Maximizer',
+      tagline: 'Aggressive Bus Fleet Electrification & Modal Shift',
+      description: 'Electrified high-capacity transit network with signal preemption across major corridors maximizing daily public commuter share.',
+      isPreset: true,
+      interventions: TRANSIT_MODESHARE_INTERVENTIONS,
+      results: transitModeShareResults,
+      updatedAt: new Date().toISOString(),
+      network: BENCHMARK_DEMO_NETWORK,
+    },
+    {
+      id: 'scenario_dharmasthala_model',
+      shortName: 'Dharmasthala Urban Model',
+      name: 'Dharmasthala Pilgrimage & Transit Corridor',
+      tagline: 'High-Capacity Pilgrim Transit & Temple Pedestrianization',
+      description: 'Dedicated electric shuttles from KSRTC Bus Stand to Temple Circle paired with Netravati River greenway and pedestrianized temple spine.',
+      isPreset: true,
+      interventions: DHARMASTHALA_INTERVENTIONS,
+      results: dharmasthalaResults,
+      updatedAt: new Date().toISOString(),
+      network: DHARMASTHALA_NETWORK,
     },
   ];
 }

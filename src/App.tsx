@@ -117,6 +117,43 @@ function SimulatorApp() {
     };
   }, [activeScenario, currentInterventions, currentSimulationResult, importedCandidates, activeNetwork]);
 
+  // Authoritative deduplicated list of available presets and personal scenarios
+  const availableScenarios = useMemo(() => {
+    const list: Scenario[] = [];
+    const seenIds = new Set<string>();
+    const seenNames = new Set<string>();
+
+    // 1. Authoritative system presets first (stable IDs)
+    for (const preset of systemPresets) {
+      if (!seenIds.has(preset.id)) {
+        seenIds.add(preset.id);
+        seenNames.add(preset.name.trim().toLowerCase());
+        list.push(preset);
+      }
+    }
+
+    // 2. Personal user scenarios (deduplicating accidental duplicate saves)
+    for (const sc of userScenarios) {
+      if (seenIds.has(sc.id)) continue;
+      const normName = sc.name.trim().toLowerCase();
+      // If a user scenario has exact same name as a preset and no custom user id, skip duplicate
+      if (seenNames.has(normName) && !sc.userId) continue;
+
+      seenIds.add(sc.id);
+      seenNames.add(normName);
+      list.push(sc);
+    }
+
+    return list;
+  }, [systemPresets, userScenarios]);
+
+  // Comparison scenarios list with live result for active scenario
+  const comparePlansScenarios = useMemo(() => {
+    return availableScenarios.map((s) =>
+      s.id === activeScenario.id ? activeScenarioWithLiveResult : s
+    );
+  }, [availableScenarios, activeScenario.id, activeScenarioWithLiveResult]);
+
   // Stale request prevention token ref
   const activeFetchIdRef = useRef<number>(0);
 
@@ -199,7 +236,7 @@ function SimulatorApp() {
     }, 3500);
   };
 
-  // Switch / Load a user scenario or system preset
+  // Switch / Load a user scenario or system preset atomically
   const handleLoadScenario = (scenarioId: string) => {
     const target =
       userScenarios.find((s) => s.id === scenarioId) ||
@@ -207,10 +244,15 @@ function SimulatorApp() {
     if (!target) return;
 
     setActiveScenarioId(target.id);
-    setCurrentInterventions(target.interventions);
-    setImportedCandidates(target.importedRealCityCandidates || []);
+    const clonedInterventions: ScenarioInterventions = JSON.parse(JSON.stringify(target.interventions));
+    setCurrentInterventions(clonedInterventions);
+    setImportedCandidates(
+      target.importedRealCityCandidates
+        ? JSON.parse(JSON.stringify(target.importedRealCityCandidates))
+        : []
+    );
     if (target.network) {
-      setActiveNetwork(target.network);
+      setActiveNetwork(JSON.parse(JSON.stringify(target.network)));
     } else {
       setActiveNetwork(BASELINE_DEMO_NETWORK);
     }
@@ -219,18 +261,7 @@ function SimulatorApp() {
 
   // Explicitly load a system benchmark preset into Scenario Lab
   const handleLoadPreset = (presetId: string) => {
-    const preset = systemPresets.find((s) => s.id === presetId);
-    if (!preset) return;
-
-    setActiveScenarioId(preset.id);
-    setCurrentInterventions(preset.interventions);
-    setImportedCandidates(preset.importedRealCityCandidates || []);
-    if (preset.network) {
-      setActiveNetwork(preset.network);
-    } else {
-      setActiveNetwork(BASELINE_DEMO_NETWORK);
-    }
-    showToast(`Loaded benchmark "${preset.name}". Adjust levers in Lab to customize and save.`);
+    handleLoadScenario(presetId);
   };
 
   // Reset to clean Baseline state
@@ -447,9 +478,9 @@ function SimulatorApp() {
       return [candidate, ...prev];
     });
 
-    // 2. Validate benchmark mapping
-    const validNode = CITY_NODES.find((n) => n.id === candidate.mappedBenchmarkId);
-    const validSeg = ROAD_SEGMENTS.find((s) => s.id === candidate.mappedBenchmarkId);
+    // 2. Validate benchmark mapping against active network
+    const validNode = activeNetwork.nodes.find((n) => n.id === candidate.mappedBenchmarkId);
+    const validSeg = activeNetwork.roadSegments.find((s) => s.id === candidate.mappedBenchmarkId);
     const isValidMapping = Boolean(validNode || validSeg) && candidate.mappedBenchmarkId !== 'unmapped';
 
     // 3. Preselect corresponding simulation intervention when mapping is valid
@@ -483,7 +514,7 @@ function SimulatorApp() {
                 : [...next.busPriority.targetSegmentIds, validSeg.id],
             };
           } else if (validNode) {
-            const transitSegs = ROAD_SEGMENTS.filter(
+            const transitSegs = activeNetwork.roadSegments.filter(
               (s) => (s.fromNodeId === validNode.id || s.toNodeId === validNode.id) && s.hasTransitCorridorPotential
             ).map((s) => s.id);
             if (transitSegs.length > 0) {
@@ -504,7 +535,7 @@ function SimulatorApp() {
                 : [...next.greenWalkways.targetSegmentIds, validSeg.id],
             };
           } else if (validNode) {
-            const greenSegs = ROAD_SEGMENTS.filter(
+            const greenSegs = activeNetwork.roadSegments.filter(
               (s) => (s.fromNodeId === validNode.id || s.toNodeId === validNode.id) && s.hasActiveMobilityPotential
             ).map((s) => s.id);
             if (greenSegs.length > 0) {
@@ -562,7 +593,11 @@ function SimulatorApp() {
 
     if (planName) {
       const generatedId = `scenario_ai_${Date.now()}`;
-      const newPlanResult = runSimulation(newInterventions);
+      const newPlanResult = runSimulation(
+        newInterventions,
+        activeNetwork.nodes,
+        activeNetwork.roadSegments
+      );
       const newScenario: Scenario = {
         id: generatedId,
         name: planName.length > 38 ? `${planName.slice(0, 35)}...` : planName,
@@ -571,6 +606,7 @@ function SimulatorApp() {
         interventions: newInterventions,
         results: newPlanResult,
         updatedAt: new Date().toISOString(),
+        network: activeNetwork,
         userId: currentUserId || undefined,
       };
       persistScenario(newScenario, currentUserId);
@@ -647,6 +683,7 @@ function SimulatorApp() {
                   setActiveTab('city_map');
                 }}
                 userEmail={user?.email}
+                activeNetwork={activeNetwork}
               />
             )}
 
@@ -724,6 +761,8 @@ function SimulatorApp() {
                     onOpenScenarioLab={() => setActiveTab('scenario_lab')}
                     onImportNetworkToDemoCity={handleImportNetworkToDemoCity}
                     activeNetworkCityName={activeNetwork.cityName}
+                    nodes={activeNetwork.nodes}
+                    roadSegments={activeNetwork.roadSegments}
                   />
                 )}
               </div>
@@ -735,7 +774,7 @@ function SimulatorApp() {
               onChangeInterventions={setCurrentInterventions}
               simulationResult={currentSimulationResult}
               baselineResult={baselineScenario.results}
-              scenarios={[baselineScenario, ...userScenarios, ...systemPresets.filter(p => !p.isBaseline)]}
+              scenarios={availableScenarios}
               activeScenario={activeScenarioWithLiveResult}
               onLoadPreset={handleLoadScenario}
               onSaveScenario={handleSaveScenario}
@@ -749,16 +788,13 @@ function SimulatorApp() {
               }}
               nodes={activeNetwork.nodes}
               roadSegments={activeNetwork.roadSegments}
+              cityName={activeNetwork.cityName}
             />
           )}
 
           {activeTab === 'compare_plans' && (
             <ComparePlans
-              scenarios={[
-                baselineScenario,
-                ...userScenarios.map((s) => (s.id === activeScenario.id ? activeScenarioWithLiveResult : s)),
-                ...systemPresets.filter((p) => !p.isBaseline && !userScenarios.some((u) => u.id === p.id)),
-              ]}
+              scenarios={comparePlansScenarios}
               activeScenario={activeScenarioWithLiveResult}
             />
           )}
@@ -797,6 +833,9 @@ function SimulatorApp() {
             <PlanningAssistant
               onApplyGoalScenario={handleApplyGoalScenario}
               onGoToLab={() => setActiveTab('scenario_lab')}
+              activeNetwork={activeNetwork}
+              currentInterventions={currentInterventions}
+              currentSimulationResult={currentSimulationResult}
             />
           )}
 

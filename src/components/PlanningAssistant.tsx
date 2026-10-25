@@ -20,32 +20,53 @@ import {
 import {
   ScenarioInterventions,
   ValidatedPlanningResult,
+  CityNetwork,
+  SimulationResult,
 } from '../types/simulation';
-import { runSimulation } from '../simulation/engine';
+import { runSimulation, CITY_NODES, ROAD_SEGMENTS } from '../simulation/engine';
 import { validateGeminiPlan } from '../simulation/geminiValidator';
 
 interface PlanningAssistantProps {
   onApplyGoalScenario: (interventions: ScenarioInterventions, planName?: string, planDescription?: string) => void;
   onGoToLab: () => void;
+  activeNetwork?: CityNetwork;
+  currentInterventions?: ScenarioInterventions;
+  currentSimulationResult?: SimulationResult;
 }
 
 export const PlanningAssistant: React.FC<PlanningAssistantProps> = ({
   onApplyGoalScenario,
   onGoToLab,
+  activeNetwork,
+  currentInterventions,
+  currentSimulationResult,
 }) => {
-  const [goalText, setGoalText] = useState(
-    'Reduce congestion around Hospital Junction within ₹10 lakh. Prioritize emergency access and minimize emissions.'
-  );
+  const activeNodes = activeNetwork?.nodes || CITY_NODES;
+  const activeSegments = activeNetwork?.roadSegments || ROAD_SEGMENTS;
+  const cityName = activeNetwork?.cityName || 'CityTwin Benchmark Demo City';
+
+  const defaultPrompt = activeNetwork?.isImported && activeNodes.length >= 2
+    ? `Reduce congestion around ${activeNodes[0].name} and ${activeNodes[1].name} within ₹25 lakh. Prioritize transit and active mobility.`
+    : 'Reduce congestion around Hospital Junction within ₹10 lakh. Prioritize emergency access and minimize emissions.';
+
+  const [goalText, setGoalText] = useState(defaultPrompt);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [validatedResult, setValidatedResult] = useState<ValidatedPlanningResult | null>(null);
 
-  const samplePrompts = [
-    'Reduce congestion around Hospital Junction within ₹10 lakh. Prioritize emergency access and minimize emissions.',
-    'Maximize public transit modal share along College Road and Market Square with high-frequency electric buses.',
-    'Pedestrianize Market Square, introduce shaded walking routes and urban green canopy under ₹12 lakh.',
-    'Optimize adaptive signal timing across Hospital Junction and College Road to relieve ambulance delays under ₹5 lakh.',
-  ];
+  const samplePrompts = activeNetwork?.isImported && activeNodes.length >= 2
+    ? [
+        `Reduce congestion around ${activeNodes[0].name} within ₹25 lakh. Optimize adaptive signal timings.`,
+        `Maximize public transit modal share along ${activeSegments[0]?.name || activeNodes[0].name} with high-frequency electric buses.`,
+        `Introduce shaded walking routes and urban green canopy along ${activeSegments[1]?.name || activeSegments[0]?.name || 'arterial corridors'} under ₹50 lakh.`,
+        `Coordinate signal clearance and transit lanes across ${activeNodes[0].name} and ${activeNodes[1].name} within ₹1 Crore.`,
+      ]
+    : [
+        'Reduce congestion around Hospital Junction within ₹10 lakh. Prioritize emergency access and minimize emissions.',
+        'Maximize public transit modal share along College Road and Market Square with high-frequency electric buses.',
+        'Pedestrianize Market Square, introduce shaded walking routes and urban green canopy under ₹12 lakh.',
+        'Optimize adaptive signal timing across Hospital Junction and College Road to relieve ambulance delays under ₹5 lakh.',
+      ];
 
   const handleSynthesize = async (promptToUse?: string) => {
     const text = promptToUse || goalText;
@@ -58,7 +79,18 @@ export const PlanningAssistant: React.FC<PlanningAssistantProps> = ({
       const response = await fetch('/api/planning-assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text }),
+        body: JSON.stringify({
+          prompt: text,
+          cityContext: activeNetwork
+            ? {
+                cityName: activeNetwork.cityName,
+                nodes: activeNetwork.nodes,
+                roadSegments: activeNetwork.roadSegments,
+                budgetCapLakhs: currentInterventions?.budgetCapLakhs,
+                currentInterventions,
+              }
+            : undefined,
+        }),
       });
 
       const data = await response.json();
@@ -91,7 +123,11 @@ export const PlanningAssistant: React.FC<PlanningAssistantProps> = ({
 
   // Preview the deterministic simulation outcome for this plan without waiting for user to leave page
   const previewSimulation = validatedResult?.isValid
-    ? runSimulation(validatedResult.scenarioInterventions)
+    ? runSimulation(
+        validatedResult.scenarioInterventions,
+        activeNetwork?.nodes,
+        activeNetwork?.roadSegments
+      )
     : null;
 
   return (
@@ -103,12 +139,15 @@ export const PlanningAssistant: React.FC<PlanningAssistantProps> = ({
             <Sparkles className="w-5 h-5" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-bold text-white tracking-tight">
                 AI Planning Assistant
               </h2>
               <span className="text-[11px] font-mono text-teal-300 bg-teal-950/60 border border-teal-800/60 px-2 py-0.5 rounded">
                 Gemini 3.8 Flash · Server-Side
+              </span>
+              <span className="text-[11px] font-mono text-cyan-300 bg-cyan-950/60 border border-cyan-800/60 px-2 py-0.5 rounded">
+                Active City: {cityName} ({activeNodes.length} Hubs)
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">

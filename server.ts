@@ -191,9 +191,65 @@ CRITICAL CONSTRAINTS:
 - If the user references locations NOT in the city network (e.g. "Airport", "Seaport", "Downtown South"), or asks for unsupported interventions (e.g. "monorail", "hyperloop", "tolls"), set clarificationNeeded: true and provide a clarificationQuestion explaining what is supported.
 - Return ONLY valid JSON conforming to the schema.`;
 
+function buildSystemInstruction(cityContext?: {
+  cityName?: string;
+  nodes?: Array<any>;
+  roadSegments?: Array<any>;
+  budgetCapLakhs?: number;
+}): string {
+  if (!cityContext || !cityContext.nodes || cityContext.nodes.length === 0) {
+    return SYSTEM_INSTRUCTION;
+  }
+
+  const cityName = cityContext.cityName || 'Active City';
+  const nodesList = cityContext.nodes
+    .map((n) => `   - "${n.id}": ${n.name} (zone: ${n.zone || 'urban'}, delay: ${n.baselineDelaySeconds || 90}s)`)
+    .join('\n');
+  const segsList = (cityContext.roadSegments || [])
+    .map(
+      (s) =>
+        `   - "${s.id}": ${s.name} (${s.lengthKm} km, ${s.lanes} lanes, transit: ${Boolean(s.hasTransitCorridorPotential)}, green: ${Boolean(s.hasActiveMobilityPotential)})`
+    )
+    .join('\n');
+
+  return `You are CityTwin AI, a senior municipal transport and urban planning advisor for a digital twin simulator.
+Your role is to translate a user's natural language planning brief into structured, valid interventions for the active city: "${cityName}".
+
+ACTIVE CITY NETWORK TAXONOMY:
+1. Hub Nodes:
+${nodesList}
+
+2. Road Segments (Links):
+${segsList}
+
+POLICY INTERVENTIONS & UNIT COSTS (in Indian Rupee Lakhs - ₹ Lakh):
+1. "adaptiveSignals":
+   - Cost: ₹1.5 Lakh per targeted node.
+   - Target locations: Node IDs from the active city network above.
+   - Parameters: optimizationLevel (1 to 5).
+2. "busPriority":
+   - Cost: ₹2.2 Lakh/km (+ ₹0.6 Lakh/km if dedicatedLane is true).
+   - Target locations: Segment IDs from the active city network above that have transit potential.
+   - Parameters: dedicatedLane (boolean), frequencyMin (3 to 15 mins), electricFleetShare (0 to 100%).
+3. "greenWalkways":
+   - Cost: ₹1.1 Lakh/km.
+   - Target locations: Segment IDs from the active city network above that have active mobility potential.
+   - Parameters: pedestrianizeMarketSquare (boolean), canopyCoverageDensity (1 to 5).
+
+BUDGETING RULES:
+- If user specifies a budget like "₹10 lakh" or "₹1 Cr" (100 Lakhs), set budgetCapLakhs to the numeric value in Lakhs (e.g. 10.0, 100.0, 500.0). CityTwin supports budgets from small pilots (₹5L) to multi-crore civic projects.
+- If user does not specify a budget, set budgetCapLakhs to null.
+
+CRITICAL CONSTRAINTS:
+- Do NOT invent or predict final numerical travel times (e.g. "will reduce travel time by 4.2 minutes"), exact emission tons, or cost savings in your text. CityTwin's deterministic simulation engine computes all numbers.
+- If the user references locations NOT in the active city network above, set clarificationNeeded: true and provide a clarificationQuestion explaining what is supported.
+- Target ONLY valid node IDs and segment IDs from the active city network taxonomy above.
+- Return ONLY valid JSON conforming to the schema.`;
+}
+
 // API endpoint for planning assistant
 app.post('/api/planning-assistant', async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, cityContext } = req.body;
 
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
     return res.status(400).json({
@@ -204,6 +260,7 @@ app.post('/api/planning-assistant', async (req, res) => {
 
   try {
     const ai = getGenAIClient();
+    const activeSystemInstruction = buildSystemInstruction(cityContext);
 
     // Models to try in order (gemini-3.1-flash-lite for instant response, gemini-3.8-flash fallback)
     const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
@@ -216,7 +273,7 @@ app.post('/api/planning-assistant', async (req, res) => {
           model: modelName,
           contents: prompt.trim(),
           config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
+            systemInstruction: activeSystemInstruction,
             responseMimeType: 'application/json',
             responseSchema: PLANNING_RESPONSE_SCHEMA,
             temperature: 0.2,
@@ -244,8 +301,12 @@ app.post('/api/planning-assistant', async (req, res) => {
       throw new Error(`Failed to parse structured JSON from model: ${parseErr.message}`);
     }
 
-    // Validate the response using our rigorous domain validator
-    const validatedPlan = validateGeminiPlan(parsedJson);
+    // Validate the response using our rigorous domain validator tailored to active city nodes and segments
+    const validatedPlan = validateGeminiPlan(
+      parsedJson,
+      cityContext?.nodes,
+      cityContext?.roadSegments
+    );
 
     return res.json({
       success: true,

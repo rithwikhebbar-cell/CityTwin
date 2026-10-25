@@ -139,7 +139,7 @@ export interface CityNetwork {
   cityName: string;
   isImported: boolean;
   importedAt?: string;
-  source?: 'demo' | 'osm_live' | 'osm_preset';
+  source?: 'demo' | 'osm_live' | 'osm_preset' | 'synthetic_estimate';
   centerCoords?: { lat: number; lng: number };
   radiusMeters?: number;
   originalNodesCount?: number;
@@ -152,6 +152,7 @@ export type NetworkEditTool = 'select' | 'add_node' | 'add_road' | 'delete';
 export interface Scenario {
   id: string;
   name: string;
+  shortName?: string;
   tagline: string;
   description: string;
   isBaseline?: boolean;
