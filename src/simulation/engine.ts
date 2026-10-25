@@ -207,7 +207,13 @@ export const MODEL_ASSUMPTIONS = {
  * Pure deterministic simulation engine.
  * Receives scenario interventions and returns reproducible metrics, segment flows, and cost accounts.
  */
-export function runSimulation(interventions: ScenarioInterventions): SimulationResult {
+export function runSimulation(
+  interventions: ScenarioInterventions,
+  customNodes?: CityNode[],
+  customSegments?: RoadSegment[]
+): SimulationResult {
+  const activeNodes = customNodes && customNodes.length > 0 ? customNodes : CITY_NODES;
+  const activeSegments = customSegments && customSegments.length > 0 ? customSegments : ROAD_SEGMENTS;
   const { adaptiveSignals, busPriority, greenWalkways, budgetCapLakhs } = interventions;
 
   // 1. Calculate Costs
@@ -218,7 +224,7 @@ export function runSimulation(interventions: ScenarioInterventions): SimulationR
 
   let busPriorityCost = 0;
   if (busPriority.enabled) {
-    const targetLength = ROAD_SEGMENTS.filter((s) =>
+    const targetLength = activeSegments.filter((s) =>
       busPriority.targetSegmentIds.includes(s.id)
     ).reduce((sum, s) => sum + s.lengthKm, 0);
 
@@ -228,7 +234,7 @@ export function runSimulation(interventions: ScenarioInterventions): SimulationR
 
   let greenWalkwaysCost = 0;
   if (greenWalkways.enabled) {
-    const targetLength = ROAD_SEGMENTS.filter((s) =>
+    const targetLength = activeSegments.filter((s) =>
       greenWalkways.targetSegmentIds.includes(s.id)
     ).reduce((sum, s) => sum + s.lengthKm, 0);
 
@@ -242,7 +248,7 @@ export function runSimulation(interventions: ScenarioInterventions): SimulationR
 
   // 2. Evaluate Node Junction Performance
   const nodeResults: SimulationResult['nodeResults'] = {};
-  CITY_NODES.forEach((node) => {
+  activeNodes.forEach((node) => {
     const hasAdaptive = adaptiveSignals.enabled && adaptiveSignals.targetNodeIds.includes(node.id);
     let delayReductionPercent = 0;
     if (hasAdaptive) {
@@ -268,7 +274,7 @@ export function runSimulation(interventions: ScenarioInterventions): SimulationR
   let totalTransitRidersSum = 0;
   let totalActiveTripsSum = 0;
 
-  ROAD_SEGMENTS.forEach((seg) => {
+  activeSegments.forEach((seg) => {
     let effectiveVolume = seg.baseVolumePerHour;
     let effectiveCapacity = seg.baseCapacityPerHour;
 
@@ -409,16 +415,31 @@ export function runSimulation(interventions: ScenarioInterventions): SimulationR
   );
 
   // Congestion Index (0 - 100): Weighted network mean V/C normalized with 0.5 = 30, 1.0 = 75, 1.3 = 100
-  const meanVc = totalCongestionRatioSum / ROAD_SEGMENTS.length;
+  const meanVc = activeSegments.length > 0 ? totalCongestionRatioSum / activeSegments.length : 0;
   const rawCongestion = Math.min(100, Math.max(10, Math.round(meanVc * 72)));
   const congestionIndex = rawCongestion;
 
   const estimatedEmissionsKgCO2 = Math.round(totalEmissionsSum);
 
-  // Hospital Corridor travel time (Residential -> College -> Hospital)
-  const resToCollege = segmentResults['seg_res_college']?.travelTimeMinutes || 0;
-  const collegeToHospital = segmentResults['seg_college_hospital']?.travelTimeMinutes || 0;
-  const hospitalCorridorTravelTime = Number((resToCollege + collegeToHospital).toFixed(2));
+  // Hospital Corridor travel time (Residential -> College -> Hospital or health access arterial)
+  let hospitalCorridorTravelTime = 0;
+  if (segmentResults['seg_res_college'] && segmentResults['seg_college_hospital']) {
+    const resToCollege = segmentResults['seg_res_college'].travelTimeMinutes;
+    const collegeToHospital = segmentResults['seg_college_hospital'].travelTimeMinutes;
+    hospitalCorridorTravelTime = Number((resToCollege + collegeToHospital).toFixed(2));
+  } else {
+    const healthNodes = activeNodes.filter((n) => n.zone === 'healthcare');
+    const healthSegs = activeSegments.filter(
+      (s) => healthNodes.some((h) => h.id === s.fromNodeId || h.id === s.toNodeId)
+    );
+    if (healthSegs.length > 0) {
+      hospitalCorridorTravelTime = Number(
+        (healthSegs.reduce((sum, s) => sum + (segmentResults[s.id]?.travelTimeMinutes || 0), 0) / healthSegs.length).toFixed(2)
+      );
+    } else {
+      hospitalCorridorTravelTime = avgTravelTimeMinutes;
+    }
+  }
 
   // Modal shares
   const totalCommuterDemand = totalVehicleTrips * MODEL_ASSUMPTIONS.averageCarOccupancy + totalTransitRidersSum + totalActiveTripsSum;

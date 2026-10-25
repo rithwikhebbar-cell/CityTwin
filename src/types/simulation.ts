@@ -133,6 +133,22 @@ export interface RealCityCandidate {
   appliedAt?: string;
 }
 
+export interface CityNetwork {
+  nodes: CityNode[];
+  roadSegments: RoadSegment[];
+  cityName: string;
+  isImported: boolean;
+  importedAt?: string;
+  source?: 'demo' | 'osm_live' | 'osm_preset';
+  centerCoords?: { lat: number; lng: number };
+  radiusMeters?: number;
+  originalNodesCount?: number;
+  originalSegmentsCount?: number;
+  updatedAt?: string;
+}
+
+export type NetworkEditTool = 'select' | 'add_node' | 'add_road' | 'delete';
+
 export interface Scenario {
   id: string;
   name: string;
@@ -144,6 +160,7 @@ export interface Scenario {
   results: SimulationResult;
   updatedAt: string;
   importedRealCityCandidates?: RealCityCandidate[];
+  network?: CityNetwork;
   userId?: string;
 }
 

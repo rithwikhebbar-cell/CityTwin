@@ -48,9 +48,11 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
 
   const deltaHospitalCorridor = Number((metB.hospitalCorridorTravelTimeMinutes - metA.hospitalCorridorTravelTimeMinutes).toFixed(2));
 
+  const comparedSegments = planB.network?.roadSegments || planA.network?.roadSegments || ROAD_SEGMENTS;
+
   // Max travel time for chart scaling
   const maxSegTravelTime = Math.max(
-    ...ROAD_SEGMENTS.map((s) =>
+    ...comparedSegments.map((s) =>
       Math.max(
         planA.results.segmentResults[s.id]?.travelTimeMinutes || 0,
         planB.results.segmentResults[s.id]?.travelTimeMinutes || 0
@@ -329,7 +331,7 @@ export const ComparePlans: React.FC<ComparePlansProps> = ({
 
         {/* SVG Grouped Horizontal Bars */}
         <div className="pt-4 space-y-3">
-          {ROAD_SEGMENTS.map((seg) => {
+          {comparedSegments.map((seg) => {
             const resA = planA.results.segmentResults[seg.id];
             const resB = planB.results.segmentResults[seg.id];
 

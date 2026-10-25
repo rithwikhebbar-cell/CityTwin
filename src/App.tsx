@@ -18,7 +18,15 @@ import {
   CITY_NODES,
   ROAD_SEGMENTS,
 } from './simulation/engine';
-import { Scenario, ScenarioInterventions, RealCityCandidate } from './types/simulation';
+import {
+  Scenario,
+  ScenarioInterventions,
+  RealCityCandidate,
+  CityNetwork,
+  CityNode,
+  RoadSegment,
+} from './types/simulation';
+import { ImportedCityNetwork } from './services/osmImportService';
 import { Check, AlertCircle, Globe, Layers, MapPin, Loader2, Building2 } from 'lucide-react';
 import {
   loadAllScenarios,
@@ -34,6 +42,14 @@ import { LoginPage } from './components/auth/LoginPage';
 import { SignupPage } from './components/auth/SignupPage';
 import { AuthCallback } from './components/auth/AuthCallback';
 
+const BASELINE_DEMO_NETWORK: CityNetwork = {
+  nodes: CITY_NODES,
+  roadSegments: ROAD_SEGMENTS,
+  cityName: 'CityTwin Benchmark Demo City',
+  isImported: false,
+  source: 'demo',
+};
+
 function SimulatorApp() {
   const { user } = useAuth();
   const currentUserId = user?.id || null;
@@ -41,6 +57,9 @@ function SimulatorApp() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [mapMode, setMapMode] = useState<'demo' | 'real'>('demo');
   const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+  // Active City Network (defaults to baseline demo city, can be edited or imported from real cities)
+  const [activeNetwork, setActiveNetwork] = useState<CityNetwork>(BASELINE_DEMO_NETWORK);
 
   // System benchmark presets (read-only reference benchmarks)
   const systemPresets = useMemo(() => getInitialScenarios(), []);
@@ -82,20 +101,21 @@ function SimulatorApp() {
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Recalculate simulation result dynamically whenever current interventions change
+  // Recalculate simulation result dynamically whenever current interventions or network topology change
   const currentSimulationResult = useMemo(() => {
-    return runSimulation(currentInterventions);
-  }, [currentInterventions]);
+    return runSimulation(currentInterventions, activeNetwork.nodes, activeNetwork.roadSegments);
+  }, [currentInterventions, activeNetwork]);
 
-  // Active scenario synced with live calculated metrics and imported candidates
+  // Active scenario synced with live calculated metrics, network topology, and imported candidates
   const activeScenarioWithLiveResult: Scenario = useMemo(() => {
     return {
       ...activeScenario,
       interventions: currentInterventions,
       results: currentSimulationResult,
       importedRealCityCandidates: importedCandidates,
+      network: activeNetwork,
     };
-  }, [activeScenario, currentInterventions, currentSimulationResult, importedCandidates]);
+  }, [activeScenario, currentInterventions, currentSimulationResult, importedCandidates, activeNetwork]);
 
   // Stale request prevention token ref
   const activeFetchIdRef = useRef<number>(0);
@@ -110,6 +130,7 @@ function SimulatorApp() {
     setActiveScenarioId('scenario_baseline');
     setCurrentInterventions(BASELINE_INTERVENTIONS);
     setImportedCandidates([]);
+    setActiveNetwork(BASELINE_DEMO_NETWORK);
 
     if (!user) {
       return;
@@ -141,14 +162,17 @@ function SimulatorApp() {
 
         if (loadRes.scenarios.length > 0) {
           // Returning user with saved scenarios: load the most recent one
-          setActiveScenarioId(loadRes.scenarios[0].id);
-          setCurrentInterventions(loadRes.scenarios[0].interventions);
-          setImportedCandidates(loadRes.scenarios[0].importedRealCityCandidates || []);
+          const first = loadRes.scenarios[0];
+          setActiveScenarioId(first.id);
+          setCurrentInterventions(first.interventions);
+          setImportedCandidates(first.importedRealCityCandidates || []);
+          setActiveNetwork(first.network || BASELINE_DEMO_NETWORK);
         } else {
           // Freshly registered user: start with clean unmanaged baseline
           setActiveScenarioId('scenario_baseline');
           setCurrentInterventions(BASELINE_INTERVENTIONS);
           setImportedCandidates([]);
+          setActiveNetwork(BASELINE_DEMO_NETWORK);
         }
 
         if (loadRes.error && configured) {
@@ -185,6 +209,11 @@ function SimulatorApp() {
     setActiveScenarioId(target.id);
     setCurrentInterventions(target.interventions);
     setImportedCandidates(target.importedRealCityCandidates || []);
+    if (target.network) {
+      setActiveNetwork(target.network);
+    } else {
+      setActiveNetwork(BASELINE_DEMO_NETWORK);
+    }
     showToast(`Loaded "${target.name}" into simulation engine.`);
   };
 
@@ -196,6 +225,11 @@ function SimulatorApp() {
     setActiveScenarioId(preset.id);
     setCurrentInterventions(preset.interventions);
     setImportedCandidates(preset.importedRealCityCandidates || []);
+    if (preset.network) {
+      setActiveNetwork(preset.network);
+    } else {
+      setActiveNetwork(BASELINE_DEMO_NETWORK);
+    }
     showToast(`Loaded benchmark "${preset.name}". Adjust levers in Lab to customize and save.`);
   };
 
@@ -204,6 +238,7 @@ function SimulatorApp() {
     setActiveScenarioId('scenario_baseline');
     setCurrentInterventions(BASELINE_INTERVENTIONS);
     setImportedCandidates([]);
+    setActiveNetwork(BASELINE_DEMO_NETWORK);
     showToast('Reset to Baseline City Network conditions.');
   };
 
@@ -228,6 +263,49 @@ function SimulatorApp() {
     );
   };
 
+  // Apply edited network from CityMap (Demo City Edit Mode)
+  const handleApplyNetworkEdits = (
+    newNodes: CityNode[],
+    newSegments: RoadSegment[],
+    newCityName?: string
+  ) => {
+    setActiveNetwork((prev) => ({
+      ...prev,
+      nodes: newNodes,
+      roadSegments: newSegments,
+      cityName: newCityName || prev.cityName,
+      updatedAt: new Date().toISOString(),
+    }));
+    showToast(`Applied network edits to ${newCityName || activeNetwork.cityName}. Simulation updated.`);
+  };
+
+  // Reset to original Demo City network
+  const handleResetOriginalDemoCity = () => {
+    setActiveNetwork(BASELINE_DEMO_NETWORK);
+    showToast('Restored baseline Demo City road network.');
+  };
+
+  // Import real city network into Demo City
+  const handleImportNetworkToDemoCity = (imported: ImportedCityNetwork) => {
+    const newNetwork: CityNetwork = {
+      nodes: imported.nodes,
+      roadSegments: imported.roadSegments,
+      cityName: imported.cityName,
+      isImported: true,
+      importedAt: imported.importedAt,
+      source: imported.source,
+      centerCoords: imported.centerCoords,
+      radiusMeters: imported.radiusMeters,
+      originalNodesCount: imported.originalNodesCount,
+      originalSegmentsCount: imported.originalSegmentsCount,
+      updatedAt: new Date().toISOString(),
+    };
+    setActiveNetwork(newNetwork);
+    setMapMode('demo');
+    setActiveTab('city_map');
+    showToast(`Successfully imported ${imported.cityName} (${imported.roadSegments.length} corridors) into Demo City!`);
+  };
+
   // Save customized scenario (supports updating active scenario or creating new copy)
   const handleSaveScenario = async (
     name: string,
@@ -246,6 +324,7 @@ function SimulatorApp() {
       results: currentSimulationResult,
       updatedAt: new Date().toISOString(),
       importedRealCityCandidates: importedCandidates,
+      network: activeNetwork,
       isBaseline: false,
       isPreset: false,
       userId: currentUserId || undefined,
@@ -624,7 +703,16 @@ function SimulatorApp() {
 
                 {/* Conditional Rendering of Map Modes */}
                 {mapMode === 'demo' ? (
-                  <CityMap simulationResult={currentSimulationResult} />
+                  <CityMap
+                    simulationResult={currentSimulationResult}
+                    nodes={activeNetwork.nodes}
+                    roadSegments={activeNetwork.roadSegments}
+                    cityName={activeNetwork.cityName}
+                    isImported={activeNetwork.isImported}
+                    onApplyNetworkEdits={handleApplyNetworkEdits}
+                    onResetOriginalDemoCity={handleResetOriginalDemoCity}
+                    onOpenScenarioLab={() => setActiveTab('scenario_lab')}
+                  />
                 ) : (
                   <RealCityMap
                     simulationResult={currentSimulationResult}
@@ -634,6 +722,8 @@ function SimulatorApp() {
                     onSendCandidateToLab={handleSendCandidateToLab}
                     importedCandidates={importedCandidates}
                     onOpenScenarioLab={() => setActiveTab('scenario_lab')}
+                    onImportNetworkToDemoCity={handleImportNetworkToDemoCity}
+                    activeNetworkCityName={activeNetwork.cityName}
                   />
                 )}
               </div>
@@ -657,6 +747,8 @@ function SimulatorApp() {
                 setActiveTab('city_map');
                 setMapMode('real');
               }}
+              nodes={activeNetwork.nodes}
+              roadSegments={activeNetwork.roadSegments}
             />
           )}
 

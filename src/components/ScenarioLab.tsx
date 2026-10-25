@@ -4,6 +4,8 @@ import {
   SimulationResult,
   Scenario,
   RealCityCandidate,
+  CityNode,
+  RoadSegment,
 } from '../types/simulation';
 import { CITY_NODES, ROAD_SEGMENTS } from '../simulation/engine';
 import {
@@ -32,6 +34,8 @@ interface ScenarioLabProps {
   baselineResult: SimulationResult;
   scenarios: Scenario[];
   activeScenario?: Scenario;
+  nodes?: CityNode[];
+  roadSegments?: RoadSegment[];
   onLoadPreset: (scenarioId: string) => void;
   onSaveScenario: (name: string, description: string, overwriteExistingId?: string) => void;
   onGoToCompare: () => void;
@@ -48,6 +52,8 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
   baselineResult,
   scenarios,
   activeScenario,
+  nodes = CITY_NODES,
+  roadSegments = ROAD_SEGMENTS,
   onLoadPreset,
   onSaveScenario,
   onGoToCompare,
@@ -70,13 +76,14 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
 
   // Toggle helpers
   const handleToggleSignals = () => {
+    const defaultTargets = nodes.slice(0, 2).map((n) => n.id);
     onChangeInterventions({
       ...interventions,
       adaptiveSignals: {
         ...adaptiveSignals,
         enabled: !adaptiveSignals.enabled,
         targetNodeIds: !adaptiveSignals.enabled && adaptiveSignals.targetNodeIds.length === 0
-          ? ['hospital_junction', 'college_road']
+          ? defaultTargets
           : adaptiveSignals.targetNodeIds,
       },
     });
@@ -97,13 +104,14 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
   };
 
   const handleToggleBusPriority = () => {
+    const defaultTargets = roadSegments.slice(0, 2).map((s) => s.id);
     onChangeInterventions({
       ...interventions,
       busPriority: {
         ...busPriority,
         enabled: !busPriority.enabled,
         targetSegmentIds: !busPriority.enabled && busPriority.targetSegmentIds.length === 0
-          ? ['seg_college_hospital', 'seg_hospital_market']
+          ? defaultTargets
           : busPriority.targetSegmentIds,
       },
     });
@@ -124,13 +132,14 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
   };
 
   const handleToggleGreenWalkways = () => {
+    const defaultTargets = roadSegments.slice(0, 2).map((s) => s.id);
     onChangeInterventions({
       ...interventions,
       greenWalkways: {
         ...greenWalkways,
         enabled: !greenWalkways.enabled,
         targetSegmentIds: !greenWalkways.enabled && greenWalkways.targetSegmentIds.length === 0
-          ? ['seg_college_hospital', 'seg_res_college']
+          ? defaultTargets
           : greenWalkways.targetSegmentIds,
       },
     });
@@ -409,7 +418,7 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
                     Target Junction Hubs (₹1.5 Lakh per junction):
                   </label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {CITY_NODES.map((node) => {
+                    {nodes.map((node) => {
                       const isTargeted = adaptiveSignals.targetNodeIds.includes(node.id);
                       return (
                         <button
@@ -513,7 +522,10 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
                     Designated Transit Road Segments (₹2.2 Lakh/km):
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {ROAD_SEGMENTS.filter((s) => s.hasTransitCorridorPotential).map((seg) => {
+                    {(roadSegments.some((s) => s.hasTransitCorridorPotential)
+                      ? roadSegments.filter((s) => s.hasTransitCorridorPotential)
+                      : roadSegments
+                    ).map((seg) => {
                       const isTargeted = busPriority.targetSegmentIds.includes(seg.id);
                       return (
                         <button
@@ -667,7 +679,10 @@ export const ScenarioLab: React.FC<ScenarioLabProps> = ({
                     Active Mobility Corridors (₹1.1 Lakh/km):
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {ROAD_SEGMENTS.filter((s) => s.hasActiveMobilityPotential).map((seg) => {
+                    {(roadSegments.some((s) => s.hasActiveMobilityPotential)
+                      ? roadSegments.filter((s) => s.hasActiveMobilityPotential)
+                      : roadSegments
+                    ).map((seg) => {
                       const isTargeted = greenWalkways.targetSegmentIds.includes(seg.id);
                       return (
                         <button

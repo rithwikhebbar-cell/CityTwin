@@ -24,9 +24,13 @@ import {
   Info,
   RefreshCw,
   ExternalLink,
+  Download,
+  Layers,
 } from 'lucide-react';
 import { CITY_NODES, ROAD_SEGMENTS } from '../simulation/engine';
 import { SimulationResult, RealCityCandidate, CandidateInterventionCategory } from '../types/simulation';
+import { AreaImportModal } from './AreaImportModal';
+import { ImportedCityNetwork, ImportPreviewData } from '../services/osmImportService';
 
 export const DEFAULT_CITY_PRESETS = [
   {
@@ -120,6 +124,8 @@ export interface RealCityMapProps {
   onSendCandidateToLab: (site: RealCityCandidate) => void;
   importedCandidates?: RealCityCandidate[];
   onOpenScenarioLab?: () => void;
+  onImportNetworkToDemoCity?: (network: ImportedCityNetwork) => void;
+  activeNetworkCityName?: string;
 }
 
 // Map Controls & Search Sub-Component
@@ -256,6 +262,8 @@ export function RealCityMap({
   onSendCandidateToLab,
   importedCandidates = [],
   onOpenScenarioLab,
+  onImportNetworkToDemoCity,
+  activeNetworkCityName,
 }: RealCityMapProps) {
   const mapsApiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '';
 
@@ -263,6 +271,7 @@ export function RealCityMap({
   const [selectedLocationName, setSelectedLocationName] = useState<string>('');
   const [activeSiteForInfo, setActiveSiteForInfo] = useState<RealCityCandidate | null>(null);
   const [activeSearchQuery, setActiveSearchQuery] = useState<string>('Bengaluru, India');
+  const [isAreaImportModalOpen, setIsAreaImportModalOpen] = useState(false);
 
   // New site form state
   const [isAddingSite, setIsAddingSite] = useState(false);
@@ -509,15 +518,28 @@ export function RealCityMap({
                 {candidateSites.length} real-world intervention points
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsAddingSite(!isAddingSite)}
-              className="p-1.5 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/40 text-xs transition-colors flex items-center gap-1"
-              title="Add candidate site from selected coordinate"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              {onImportNetworkToDemoCity && (
+                <button
+                  type="button"
+                  onClick={() => setIsAreaImportModalOpen(true)}
+                  className="px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-bold text-xs transition-all shadow-md flex items-center gap-1"
+                  title="Import selected real-city road network directly into Demo City"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Import to Demo</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsAddingSite(!isAddingSite)}
+                className="p-1.5 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 border border-teal-500/40 text-xs transition-colors flex items-center gap-1"
+                title="Add candidate site from selected coordinate"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Pin</span>
+              </button>
+            </div>
           </div>
 
           {/* Active Site Details or Selected Coordinate Details */}
@@ -599,6 +621,17 @@ export function RealCityMap({
                     <ArrowRight className="w-3 h-3" />
                   </button>
                 )}
+
+                {onImportNetworkToDemoCity && (
+                  <button
+                    type="button"
+                    onClick={() => setIsAreaImportModalOpen(true)}
+                    className="w-full py-1.5 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/40 text-xs font-semibold transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Import Network Around Pin</span>
+                  </button>
+                )}
               </div>
             </div>
           ) : selectedCoord ? (
@@ -624,14 +657,26 @@ export function RealCityMap({
               </div>
 
               {!isAddingSite && (
-                <button
-                  type="button"
-                  onClick={() => setIsAddingSite(true)}
-                  className="w-full mt-1 py-1.5 rounded-lg bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-bold text-xs transition-all shadow-md flex items-center justify-center gap-1.5"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Pin as Candidate Intervention</span>
-                </button>
+                <div className="space-y-1.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingSite(true)}
+                    className="w-full py-1.5 rounded-lg bg-gradient-to-r from-teal-500 to-cyan-500 hover:from-teal-400 hover:to-cyan-400 text-slate-950 font-bold text-xs transition-all shadow-md flex items-center justify-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Pin as Candidate Intervention</span>
+                  </button>
+                  {onImportNetworkToDemoCity && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAreaImportModalOpen(true)}
+                      className="w-full py-1.5 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/40 font-semibold text-xs transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Import Area into Demo City</span>
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           ) : (
@@ -851,6 +896,24 @@ export function RealCityMap({
           </div>
         </div>
       </div>
+
+      {/* Real City Road Network Area Import Modal */}
+      {onImportNetworkToDemoCity && (
+        <AreaImportModal
+          isOpen={isAreaImportModalOpen}
+          onClose={() => setIsAreaImportModalOpen(false)}
+          targetCoords={
+            selectedCoord ||
+            DEFAULT_CITY_PRESETS.find((p) =>
+              p.name.toLowerCase().includes(activeSearchQuery.toLowerCase())
+            )?.coords || { lat: 12.9716, lng: 77.5946 }
+          }
+          targetLocationName={selectedLocationName || activeSearchQuery || 'Real City Area'}
+          onConfirmImport={(preview) => {
+            onImportNetworkToDemoCity(preview.rawNetwork);
+          }}
+        />
+      )}
     </div>
   );
 }

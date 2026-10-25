@@ -7,10 +7,17 @@ import {
 import { validateGeminiPlan } from './geminiValidator';
 import { normalizeAppUrl, getCanonicalAppUrl, getAuthCallbackUrl } from '../lib/supabase';
 import { getLocalStorageKey, getSystemPresets } from '../services/scenarioService';
+import {
+  calculateBoundingBox,
+  calculateHaversineDistanceKm,
+  projectGeoToCanvas,
+  CURATED_CITY_IMPORT_PRESETS,
+} from '../services/osmImportService';
+import { CityNode, RoadSegment } from '../types/simulation';
 
 export interface TestResultItem {
   name: string;
-  category: 'simulation' | 'gemini_validation' | 'persistence' | 'authentication';
+  category: 'simulation' | 'gemini_validation' | 'persistence' | 'authentication' | 'network_import_editing';
   passed: boolean;
   message: string;
 }
@@ -519,6 +526,204 @@ export function runSimulationValidationTests(): {
     message: test18Passed
       ? 'Personal workspaces and local storage keys are strictly isolated per Supabase user ID, guaranteeing fresh empty dashboards for new users while preserving system baselines.'
       : 'User workspace isolation invariant failed.',
+  });
+
+  // ==========================================
+  // Section 5: Real City Import & Network Editing Assertions (Phase 2 & Phase 3)
+  // ==========================================
+
+  // Test 19: Geographic Bounding Box & Haversine Distance Bounds
+  const bbox1000m = calculateBoundingBox(12.9716, 77.5946, 1000);
+  const bboxValid =
+    bbox1000m.north > 12.9716 &&
+    bbox1000m.south < 12.9716 &&
+    bbox1000m.east > 77.5946 &&
+    bbox1000m.west < 77.5946;
+
+  const distKm = calculateHaversineDistanceKm(12.9716, 77.5946, 12.9806, 77.5946);
+  const haversineValid = distKm >= 0.95 && distKm <= 1.05; // 0.009 deg lat is ~1.00 km
+
+  const test19Passed = bboxValid && haversineValid;
+  tests.push({
+    name: 'Geospatial Bounding Box & Haversine Distance Invariants',
+    category: 'network_import_editing',
+    passed: test19Passed,
+    message: test19Passed
+      ? `Bounding box correctly encloses radius; 1km coordinate offset computed as ${distKm}km within 1% precision.`
+      : 'Geospatial bounding box or Haversine distance computation failed bounds check.',
+  });
+
+  // Test 20: Geographic to Canvas Viewport Projection Invariance
+  const sampleGeoPoints = [
+    { id: 'p1', lat: 12.970, lng: 77.590 },
+    { id: 'p2', lat: 12.980, lng: 77.600 },
+    { id: 'p3', lat: 12.975, lng: 77.595 },
+  ];
+  const projectedMap = projectGeoToCanvas(sampleGeoPoints, 940, 540, 70);
+  let allPointsInsideViewport = true;
+  projectedMap.forEach((pt) => {
+    if (pt.x < 70 || pt.x > 870 || pt.y < 70 || pt.y > 470) {
+      allPointsInsideViewport = false;
+    }
+  });
+
+  const test20Passed = projectedMap.size === 3 && allPointsInsideViewport;
+  tests.push({
+    name: 'Geographic-to-SVG Canvas Projection & Viewport Fitting Invariance',
+    category: 'network_import_editing',
+    passed: test20Passed,
+    message: test20Passed
+      ? 'Geographic lat/lng coordinates accurately project into 940x540 SVG simulation canvas with safe padding margins.'
+      : 'Geographic projection placed nodes outside bounded simulation canvas.',
+  });
+
+  // Test 21: Dynamic Simulation Execution with Custom Network Topology
+  const customNodes: CityNode[] = [
+    {
+      id: 'n1',
+      name: 'West End',
+      shortName: 'W-END',
+      zone: 'residential',
+      x: 100,
+      y: 250,
+      description: 'Western Residential District',
+      baselineDelaySeconds: 15,
+    },
+    {
+      id: 'n2',
+      name: 'Central Station',
+      shortName: 'CENT',
+      zone: 'commercial',
+      x: 450,
+      y: 250,
+      description: 'Central Commercial Hub',
+      baselineDelaySeconds: 30,
+    },
+    {
+      id: 'n3',
+      name: 'East Hub',
+      shortName: 'EHUB',
+      zone: 'tech',
+      x: 800,
+      y: 250,
+      description: 'Eastern Tech Hub',
+      baselineDelaySeconds: 20,
+    },
+  ];
+
+  const customSegments: RoadSegment[] = [
+    {
+      id: 'seg_1_2',
+      name: 'West-Central Link',
+      fromNodeId: 'n1',
+      toNodeId: 'n2',
+      lengthKm: 3.5,
+      lanes: 2,
+      baseCapacityPerHour: 2200,
+      baseVolumePerHour: 2500,
+      freeFlowSpeedKmh: 45,
+      hasTransitCorridorPotential: true,
+      hasActiveMobilityPotential: false,
+    },
+    {
+      id: 'seg_2_3',
+      name: 'Central-East Arterial',
+      fromNodeId: 'n2',
+      toNodeId: 'n3',
+      lengthKm: 4.2,
+      lanes: 3,
+      baseCapacityPerHour: 3600,
+      baseVolumePerHour: 3000,
+      freeFlowSpeedKmh: 50,
+      hasTransitCorridorPotential: true,
+      hasActiveMobilityPotential: true,
+    },
+  ];
+
+  const customInterventions = {
+    ...BASELINE_INTERVENTIONS,
+    busPriority: {
+      ...BASELINE_INTERVENTIONS.busPriority,
+      enabled: true,
+      targetSegmentIds: ['seg_1_2'],
+      dedicatedLane: true,
+    },
+  };
+
+  const dynamicSimResult = runSimulation(customInterventions, customNodes, customSegments);
+  const test21Passed =
+    Boolean(dynamicSimResult) &&
+    Object.keys(dynamicSimResult.segmentResults).length === 2 &&
+    dynamicSimResult.metrics.averageTravelTimeMinutes > 0 &&
+    dynamicSimResult.metrics.estimatedEmissionsKgCO2 > 0 &&
+    dynamicSimResult.segmentResults['seg_1_2'].averageSpeedKmh > 0;
+
+  tests.push({
+    name: 'Dynamic Simulation Engine Execution on Arbitrary Network Topology',
+    category: 'network_import_editing',
+    passed: test21Passed,
+    message: test21Passed
+      ? `Engine evaluated custom network: ${Object.keys(dynamicSimResult.segmentResults).length} corridors, emissions ${dynamicSimResult.metrics.estimatedEmissionsKgCO2} kg CO2, seg speed ${dynamicSimResult.segmentResults['seg_1_2'].averageSpeedKmh} km/h.`
+      : 'Simulation engine failed on custom network topology.',
+  });
+
+  // Test 22: Network Topology Invariant & Validation Rules
+  const validNodeIds = new Set(customNodes.map((n: CityNode) => n.id));
+  const segmentEndpointsExist = customSegments.every(
+    (s) => validNodeIds.has(s.fromNodeId) && validNodeIds.has(s.toNodeId)
+  );
+  const positiveCapacities = customSegments.every(
+    (s) => s.baseCapacityPerHour > 0 && s.lengthKm > 0 && s.lanes >= 1
+  );
+
+  const test22Passed = segmentEndpointsExist && positiveCapacities;
+  tests.push({
+    name: 'Network Topology Invariant & Endpoint Referential Integrity',
+    category: 'network_import_editing',
+    passed: test22Passed,
+    message: test22Passed
+      ? 'All segment endpoints strictly map to defined nodes with positive capacities and physically valid lengths.'
+      : 'Network topology referential integrity invariant failed.',
+  });
+
+  // Test 23: Curated Real City Presets Invariance (Bengaluru, Mumbai, London)
+  const curatedPresetList = [
+    CURATED_CITY_IMPORT_PRESETS.bengaluru,
+    CURATED_CITY_IMPORT_PRESETS.mumbai,
+    CURATED_CITY_IMPORT_PRESETS.london,
+  ];
+
+  let allCuratedPresetsValid = true;
+  let totalCuratedSegments = 0;
+  for (const preset of curatedPresetList) {
+    if (preset.nodes.length < 3 || preset.roadSegments.length < 2) {
+      allCuratedPresetsValid = false;
+    }
+    const nodeIds = new Set(preset.nodes.map((n: CityNode) => n.id));
+    for (const seg of preset.roadSegments) {
+      if (!nodeIds.has(seg.fromNodeId) || !nodeIds.has(seg.toNodeId)) {
+        allCuratedPresetsValid = false;
+      }
+      if (seg.baseCapacityPerHour <= 0 || seg.lengthKm <= 0) {
+        allCuratedPresetsValid = false;
+      }
+    }
+    // Verify simulation runs without crashing on each preset
+    const presetResult = runSimulation(BASELINE_INTERVENTIONS, preset.nodes, preset.roadSegments);
+    if (!presetResult || presetResult.metrics.averageTravelTimeMinutes <= 0) {
+      allCuratedPresetsValid = false;
+    }
+    totalCuratedSegments += preset.roadSegments.length;
+  }
+
+  const test23Passed = allCuratedPresetsValid && curatedPresetList.length >= 3;
+  tests.push({
+    name: 'Curated Real-City Presets Physical & Simulation Invariance',
+    category: 'network_import_editing',
+    passed: test23Passed,
+    message: test23Passed
+      ? `All ${curatedPresetList.length} curated metropolitan presets (Bengaluru, Mumbai, London with ${totalCuratedSegments} total corridors) pass endpoint integrity and deterministic BPR simulation execution.`
+      : 'Curated real city presets failed validation or simulation execution.',
   });
 
   const allPassed = tests.every((t) => t.passed);

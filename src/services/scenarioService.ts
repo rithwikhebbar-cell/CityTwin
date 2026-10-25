@@ -160,12 +160,17 @@ export async function loadAllScenarios(userId?: string | null): Promise<{
 
       if (validateScenarioStructure(scData)) {
         // Enforce deterministic simulation recalculation so the engine remains source of truth
-        const recalculated = runSimulation(scData.interventions);
+        const recalculated = runSimulation(
+          scData.interventions,
+          scData.network?.nodes,
+          scData.network?.roadSegments
+        );
         dbScenarios.push({
           ...scData,
           id: row.id,
           name: row.name || scData.name,
           results: recalculated,
+          network: scData.network,
           updatedAt: row.updated_at || scData.updatedAt || new Date().toISOString(),
           importedRealCityCandidates: scData.importedRealCityCandidates || [],
           userId: cleanUserId,
@@ -208,7 +213,11 @@ export async function persistScenario(
   }
 
   // Always keep deterministic simulation fresh
-  const freshlyCalculated = runSimulation(scenario.interventions);
+  const freshlyCalculated = runSimulation(
+    scenario.interventions,
+    scenario.network?.nodes,
+    scenario.network?.roadSegments
+  );
   const scenarioToSave: Scenario = {
     ...scenario,
     results: freshlyCalculated,
